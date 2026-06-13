@@ -111,10 +111,21 @@ impl AppError {
         }
     }
 
+    #[track_caller]
+    pub fn with_external(self, source: impl std::error::Error + Send + Sync + 'static) -> Self {
+        match self {
+            AppError::Internal(e) => AppError::Internal(InternalError {
+                caused_by: Some(Box::new(AppError::external(e.code, source))),
+                ..e
+            }),
+            AppError::External(_) => self,
+        }
+    }
+
     pub fn code(&self) -> ErrorCode {
         match self {
             AppError::Internal(e) => e.code,
-            _ => ErrorCode::Network,
+            AppError::External(e) => e.code,
         }
     }
     pub fn message(&self) -> Cow<'_, str> {
@@ -276,4 +287,4 @@ impl From<ErrorCode> for StatusCode {
     }
 }
 
-pub type Result<T> = ::core::result::Result<T, AppError>;
+pub type Result<T, E = AppError> = ::core::result::Result<T, E>;

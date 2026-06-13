@@ -25,8 +25,9 @@ ttsfx is an **OpenAI-compatible speech proxy** that intercepts onomatopoeia patt
 
 ```
 src/
-├── config.rs       # Config loading (TOML + env vars), PatternFilter, default filters
+├── config.rs       # Config loading (TOML + env vars), PatternFilter, PatternConfig
 ├── error.rs        # AppError, ErrorCode enum, err!/bail! macros, IntoResponse
+├── utils.rs        # Partial<T>, PartialOrDefault, WarnOnError (serde_with adapters)
 ├── lib.rs          # Public re-exports (Result)
 └── main.rs         # Binary entry point, server bootstrap
 
@@ -152,21 +153,9 @@ Example:
 ```rust
 #[test]
 fn test_pattern_filter_matches() {
-    let filter = PatternFilter { id: "boom".into(), priority: 100, regex: Regex::new(r"\b(?:BOOM|Boom)\b").unwrap() };
+    let filter = PatternFilter { id: "boom".into(), priority: 100, regex: Regex::new(r"\b(?:BOOM|Boom)\b").unwrap(), overrides: None };
     assert_eq!(filter.matches("a BOOM sound"), Some((2, 6)));
     assert!(filter.matches("nothing here").is_none());
-}
-
-#[test]
-fn test_merge_patterns_user_override() {
-    let defaults = default_filters();
-    // ... verify merge logic, sorting, deduplication
-}
-
-#[test]
-fn test_from_raw_invalid_regex() {
-    let raw = RawConfig { patterns: Some(vec![RawPattern { id: "bad".into(), priority: 50, regex: "[invalid(".to_string() }]), ..Default::default() };
-    assert!(Config::from_raw(raw).is_err()); // should fail on invalid regex
 }
 ```
 
@@ -177,6 +166,11 @@ fn test_from_raw_invalid_regex() {
 - `#[serde(rename_all = "camelCase")]` — always camelCase for JSON APIs
 - `#[skip_serializing_none]` from `serde_with` — cleaner than per-field skip
 - **DON'T** use snake_case or lowercase for JSON field names
+- **DON'T** create duplicate Raw/Final type pairs — use `serde_with` adapters instead:
+  - `DisplayFromStr` — deserialize types via `FromStr` (e.g. `Regex`)
+  - `PartialOrDefault<_>` — deserialize partial struct, fill missing fields from `Default`
+  - `VecSkipError<_, WarnOnError>` — skip bad items in collections with a warning
+- **DO** use `Partial<T>` for per-item overrides in hierarchical config (see Patterns below)
 
 ---
 
@@ -210,11 +204,45 @@ fn handle() -> Result { /* ... */ }
 
 ## Patterns to Follow
 
-### No `Ref<T>` needed here — we don't have a database
-This project doesn't use SurrealDB or entity references. We deal with:
-- **Config** (struct from TOML/env)
-- **PatternFilter** (compiled regex rules)
-- **AppError** (structured error type with ErrorCode enum)
+### Hierarchical Config
+One base struct (`PatternConfig`) defines overridable fields with correct defaults. Top-level config uses `PartialOrDefault` to fill missing fields from `Default`. Per-pattern overrides use `Partial<PatternConfig>`.
+
+```rust
+// Base config — one source of truth for defaults and fields
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PatternConfig {
+    pub tts_base_url: String,
+    pub volume_target_db: f64,
+    pub cache_dir: PathBuf,
+    // ...
+}
+
+impl Default for PatternConfig {
+    fn default() -> Self {
+        Self {
+            tts_base_url: "https://api.openai.com/v1".into(),
+            volume_target_db: -16.0,
+            cache_dir: PathBuf::from("sounds"),
+        }
+    }
+}
+
+// Top-level config — missing fields get defaults for free
+#[serde_as]
+pub struct Config {
+    #[serde_as(deserialize_as = "PartialOrDefault<_>")]
+    pub overridable: PatternConfig,
+    pub patterns: Vec<PatternFilter>,
+}
+
+// Per-pattern — partial overrides merge on top of base
+pub struct PatternFilter {
+    pub overrides: Option<Partial<PatternConfig>>,
+    // ...
+}
+```
+
+Adding a field to `PatternConfig` automatically propagates: Config gets the default, patterns can override it. No need to update multiple types.
 
 ### Pattern Matching Flow
 ```
@@ -228,6 +256,12 @@ all segments → normalize_volume() + concat_segments() → Vec<f32>
               ↓
 encode_wav() (AudioProcessor) → WAV bytes response body
 ```
+
+### No `Ref<T>` needed here — we don't have a database
+This project doesn't use SurrealDB or entity references. We deal with:
+- **Config** (struct from TOML/env)
+- **PatternFilter** (compiled regex rules)
+- **AppError** (structured error type with ErrorCode enum)
 
 ### HTTP Handler Pattern
 Free-standing functions + AppState struct, no impl blocks on handler types:
@@ -256,4 +290,6 @@ impl axum::response::IntoResponse for AppError { /* ... */ }
 4. **Copy-paste duplication** — extract common patterns into helpers
 5. **Ignoring existing patterns in the codebase** — look at how similar code is written
 6. **Not using `#[track_caller]` on error constructors** — helps with debugging
-7. **Hardcoding defaults instead of using serde default functions** — keep them as module-level `fn` helpers
+7. **Creating duplicate types for serde** — use `serde_with` adapters (`DisplayFromStr`, `PartialOrDefault`, `VecSkipError`) instead of Raw/Final pairs
+8. **Over-investing in simple things** — don't create extra modules, files, or tests for trivial code. Invest design effort in the hard parts (like config hierarchy)
+9. **Speculative abstractions** — don't add convenience methods, wrappers, or helpers "just in case"
