@@ -1,0 +1,29 @@
+[package]
+name = "ttsfx"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = { version = "0.8", features = ["http2", "query"] }
+reqwest = { version = "0.13", features = ["json", "stream"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+config = { version = "0.15", features = ["toml"] }
+
+# Error handling: thiserror for std::Error impl, color_eyre (optional) for backtraces
+thiserror = "2"
+color-eyre = { version = "0.6", features = ["capture-spantrace"] }
+tracing = "0.1"
+
+# Audio: WAV encoding (hound), multi-format decoding + optional re-encoding (symphonia)
+hound = "3.5"
+futures-util = { version = "0.3", features = ["std"] }
+
+# Pattern matching (fancy-regex for lookaheads/advanced features)
+fancy-regex = "0.18"
+
+# Cache directory watching (notify crate)
+notify = { version = "8", features = ["serde"] }
+serde_with = "3.21.0"
+fastrand = "2.4.1"
