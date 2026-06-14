@@ -1,52 +1,55 @@
 # Built-in sound effect pattern filters.
 # Edit this file to add/remove/override patterns without recompiling.
 
+[overridable]
+match_mode = { mode = "Levenshtein", threshold = 1 }
+
 [[patterns]]
-id = "boom"
+name = "boom"
 priority = 100
 regex = "\\b(?:BOOM|Boom)\\b"
 
 [[patterns]]
-id = "crash"
+name = "crash"
 priority = 100
 regex = "\\b(?:CRASH|Crash)\\b"
 
 [[patterns]]
-id = "whoosh"
+name = "whoosh"
 priority = 90
 regex = "\\b(?:WHOOSH|Whoosh)\\b"
 
 [[patterns]]
-id = "zap"
+name = "zap"
 priority = 90
 regex = "\\b(?:ZAP|Zap)\\b"
 
 [[patterns]]
-id = "splat"
+name = "splat"
 priority = 80
 regex = "\\b(?:SPLAT|Splat)\\b"
 
 [[patterns]]
-id = "clap"
+name = "clap"
 priority = 80
 regex = "\\b(?:CLAP|Clap)\\b"
 
 [[patterns]]
-id = "thud"
+name = "thud"
 priority = 70
 regex = "\\b(?:THUD|Thud)\\b"
 
 [[patterns]]
-id = "ding"
+name = "ding"
 priority = 70
 regex = "\\b(?:DING|Ding)\\b"
 
 [[patterns]]
-id = "sizzle"
+name = "sizzle"
 priority = 60
 regex = "\\b(?:SIZZLE|Sizzle)\\b"
 
 [[patterns]]
-id = "pop"
+name = "pop"
 priority = 60
 regex = "\\b(?:POP|Pop)\\b"

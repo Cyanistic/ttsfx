@@ -4,7 +4,7 @@ use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::{serde_as, DisplayFromStr, VecSkipError};
-use std::{borrow::Cow, path::PathBuf};
+use std::path::PathBuf;
 
 /// Default config template embedded from disk.
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
@@ -18,15 +18,24 @@ pub fn volume_gain(db: f64) -> f32 {
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternFilter {
-    /// Unique identifier for this rule (e.g. "boom").
-    pub id: String,
+    /// Optional human-readable name for logging (e.g. "explosion").
+    pub name: Option<String>,
     /// Higher = checked first (descending sort at startup).
+    #[serde(default)]
     pub priority: u32,
     /// Compiled fancy-regex pattern (e.g. r"\bboom\b").
     #[serde_as(as = "DisplayFromStr")]
     pub regex: Regex,
+}
+
+/// A compiled pattern filter rule for detecting onomatopoeia in text.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfigPatternFilter {
+    #[serde(flatten)]
+    pub filter: PatternFilter,
     /// Per-pattern dB override. None = use global default from Config.
-    pub overrides: Option<Partial<PatternConfig>>,
+    #[serde(default)]
+    pub overrides: Partial<PatternConfig>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -42,6 +51,25 @@ pub struct PatternConfig {
 
     /// Audio files + .json sidecar metadata (default "sounds/").
     pub cache_dir: PathBuf,
+
+    pub match_mode: MatchMode,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "mode")]
+pub enum MatchMode {
+    Levenshtein(LevenshteinMode),
+    Embeddings(EmbeddingMode),
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LevenshteinMode {
+    pub threshold: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingMode {
+    pub threshold: f32,
 }
 
 impl Default for PatternConfig {
@@ -51,34 +79,11 @@ impl Default for PatternConfig {
             sfx_api_key: String::new(),
             volume_target_db: -16.0,
             cache_dir: PathBuf::from("sounds"),
+            match_mode: MatchMode::Levenshtein(LevenshteinMode { threshold: 1 }),
         }
     }
 }
 
-impl PatternFilter {
-    /// Returns (start_offset, end_offset) of the first match. None if no match.
-    pub fn matches(&self, text: &str) -> Option<(usize, usize)> {
-        self.regex
-            .find(text)
-            .ok()
-            .flatten()
-            .map(|m| (m.start(), m.end()))
-    }
-
-    /// Returns the matched substring (consumed segment). None if no match.
-    pub fn consume<'text>(&self, text: &'text str) -> Option<&'text str> {
-        self.regex.find(text).ok().flatten().map(|m| m.as_str())
-    }
-
-    /// Returns the rest of text after consuming a match. Empty if no match was found.
-    pub fn remaining<'text>(&self, text: &'text str) -> Cow<'text, str> {
-        if let Some((start, end)) = self.matches(text) {
-            format!("{}{}", &text[..start], &text[end..]).into()
-        } else {
-            text.into()
-        }
-    }
-}
 /// Application configuration. Loaded from defaults + TOML file via config crate builder pattern.
 #[serde_as]
 #[derive(Debug, Serialize, Deserialize)]
@@ -91,7 +96,7 @@ pub struct Config {
 
     /// Compiled filters from defaults + user overrides.
     #[serde_as(as = "VecSkipError<_, WarnOnError>")]
-    pub patterns: Vec<PatternFilter>,
+    pub patterns: Vec<ConfigPatternFilter>,
 }
 
 impl Config {
@@ -123,7 +128,7 @@ impl Config {
 
     fn from_raw(mut raw: Config) -> Result<Self> {
         raw.patterns
-            .sort_by(|a, b| b.priority.cmp(&a.priority).then_with(|| a.id.cmp(&b.id)));
+            .sort_by(|a, b| b.filter.priority.cmp(&a.filter.priority));
         Ok(raw)
     }
 }

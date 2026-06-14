@@ -1,9 +1,10 @@
 use crate::err;
-use axum::{http::StatusCode, Json};
+use axum::{Json, http::StatusCode};
 use serde::Serialize;
 use serde_with::skip_serializing_none;
 use std::borrow::Cow;
 use std::fmt;
+use tracing::{debug, error, info, trace, warn};
 
 /// Categorized error codes for different types of failures.  
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -288,3 +289,100 @@ impl From<ErrorCode> for StatusCode {
 }
 
 pub type Result<T, E = AppError> = ::core::result::Result<T, E>;
+
+pub trait ResultExt<T, E> {
+    #[track_caller]
+    fn error(self) -> Self
+    where
+        E: fmt::Display;
+    #[track_caller]
+    fn warn(self) -> Self
+    where
+        E: fmt::Display;
+    #[track_caller]
+    fn info(self) -> Self
+    where
+        E: fmt::Display;
+    #[track_caller]
+    fn debug(self) -> Self
+    where
+        E: fmt::Display;
+    #[track_caller]
+    fn trace(self) -> Self
+    where
+        E: fmt::Display;
+    #[track_caller]
+    fn log(self) -> Self
+    where
+        E: fmt::Display;
+}
+
+impl<T, E> ResultExt<T, E> for core::result::Result<T, E> {
+    #[track_caller]
+    fn error(self) -> Self
+    where
+        E: fmt::Display,
+    {
+        if let Err(ref e) = self {
+            let loc = core::panic::Location::caller();
+            error!(error = %e, caller.file = loc.file(), caller.line = loc.line());
+        }
+        self
+    }
+
+    #[track_caller]
+    fn warn(self) -> Self
+    where
+        E: fmt::Display,
+    {
+        if let Err(ref e) = self {
+            let loc = core::panic::Location::caller();
+            warn!(error = %e, caller.file = loc.file(), caller.line = loc.line());
+        }
+        self
+    }
+
+    #[track_caller]
+    fn info(self) -> Self
+    where
+        E: fmt::Display,
+    {
+        if let Err(ref e) = self {
+            let loc = core::panic::Location::caller();
+            info!(error = %e, caller.file = loc.file(), caller.line = loc.line());
+        }
+        self
+    }
+
+    #[track_caller]
+    fn debug(self) -> Self
+    where
+        E: fmt::Display,
+    {
+        if let Err(ref e) = self {
+            let loc = core::panic::Location::caller();
+            debug!(error = %e, caller.file = loc.file(), caller.line = loc.line());
+        }
+        self
+    }
+
+    #[track_caller]
+    fn trace(self) -> Self
+    where
+        E: fmt::Display,
+    {
+        if let Err(ref e) = self {
+            let loc = core::panic::Location::caller();
+            trace!(error = %e, caller.file = loc.file(), caller.line = loc.line());
+        }
+        self
+    }
+
+    #[track_caller]
+    fn log(self) -> Self
+    where
+        E: fmt::Display,
+    {
+        self.info()
+    }
+}

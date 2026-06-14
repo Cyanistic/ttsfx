@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 use serde_with::{DeserializeAs, InspectError};
 use tracing::warn;
 
-use crate::{Result, err};
+use crate::{err, Result};
 
 /// A partial representation of `T` where only some fields may be present.
 ///
