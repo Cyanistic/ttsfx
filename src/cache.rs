@@ -55,6 +55,8 @@ impl CacheIndex {
     /// Returns the closest match within the distance threshold.
     pub fn find_match(
         &self,
+        // Reserved for future per-pattern dispatch (e.g. embeddings vector search,
+        // pattern-specific similarity strategies). Currently unused by Levenshtein mode.
         _filter: &PatternFilter,
         base: &PatternConfig,
         text: &str,

@@ -8,14 +8,16 @@ use tracing::{debug, error, info, trace, warn};
 
 /// Categorized error codes for different types of failures.  
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", content = "data")]
 pub enum ErrorCode {
     Validation,       // invalid request parameters (e.g. bad JSON body)
     NotFound,         // cache entry not found
     Conflict,         // duplicate/already exists (e.g. pattern ID conflict)
     Configuration,    // config loading / parsing failure
     AudioDecodeError, // audio decode error (WAV/MP3 — corrupt file or unsupported format)
-    Network,          // HTTP backend failures (TTS/SFX API errors — timeout, connection refused)
+    Network,          // connection/timeout errors (no upstream status code available)
     RateLimited,      // rate limit exceeded (429 from backend API)
+    Upstream(u16),    // upstream API returned a non-success HTTP status — carries the raw code
     Internal,         // unexpected/unclassified error
     Serialization,
     Unauthorized,
@@ -161,6 +163,20 @@ impl From<serde_json::Error> for AppError {
     }
 }
 
+impl From<reqwest::Error> for AppError {
+    #[track_caller]
+    fn from(e: reqwest::Error) -> Self {
+        let code = if e.is_timeout() || e.is_connect() {
+            ErrorCode::Network
+        } else if let Some(status) = e.status() {
+            ErrorCode::Upstream(status.as_u16())
+        } else {
+            ErrorCode::Network
+        };
+        err!(@external code, e)
+    }
+}
+
 // ============================================================================
 // Convenience Macros
 // ============================================================================
@@ -271,14 +287,15 @@ impl axum::response::IntoResponse for AppError {
 }
 
 impl From<ErrorCode> for StatusCode {
-    // maps categorized error → HTTP status
     fn from(code: ErrorCode) -> Self {
         match code {
-            // maps categorized error → HTTP status
             ErrorCode::Validation | ErrorCode::Configuration => StatusCode::BAD_REQUEST,
             ErrorCode::NotFound => StatusCode::NOT_FOUND,
             ErrorCode::Conflict => StatusCode::CONFLICT,
             ErrorCode::RateLimited => StatusCode::TOO_MANY_REQUESTS,
+            ErrorCode::Upstream(status) => {
+                StatusCode::from_u16(status).unwrap_or(StatusCode::BAD_GATEWAY)
+            }
             ErrorCode::AudioDecodeError | ErrorCode::Network => StatusCode::BAD_GATEWAY,
             ErrorCode::Serialization | ErrorCode::Internal | ErrorCode::Io => {
                 StatusCode::INTERNAL_SERVER_ERROR

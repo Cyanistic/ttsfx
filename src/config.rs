@@ -53,6 +53,10 @@ pub struct PatternConfig {
     pub cache_dir: PathBuf,
 
     pub match_mode: MatchMode,
+
+    /// ElevenLabs prompt influence (0.0-1.0, default 0.3).
+    /// Lower values give the model more creative freedom; higher values stick closer to the text prompt.
+    pub sfx_prompt_influence: f32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -80,6 +84,7 @@ impl Default for PatternConfig {
             volume_target_db: -16.0,
             cache_dir: PathBuf::from("sounds"),
             match_mode: MatchMode::Levenshtein(LevenshteinMode { threshold: 1 }),
+            sfx_prompt_influence: 0.3,
         }
     }
 }

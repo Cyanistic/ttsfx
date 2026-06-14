@@ -1,16 +1,16 @@
 use crate::config::PatternFilter;
 use tracing::warn;
 
-pub struct PatternMatch<'filter> {
+pub struct PatternMatch {
     pub start: usize,
     pub end: usize,
-    pub filter: &'filter PatternFilter,
+    pub pattern_index: usize,
 }
 
-pub fn match_patterns<'filter>(
-    patterns: &'filter [PatternFilter],
-    text: &str,
-) -> Vec<PatternMatch<'filter>> {
+pub fn match_patterns<'a, I>(patterns: I, text: &str) -> Vec<PatternMatch>
+where
+    I: Iterator<Item = &'a PatternFilter>,
+{
     struct Chunk<'text> {
         offset: usize,
         text: &'text str,
@@ -18,7 +18,7 @@ pub fn match_patterns<'filter>(
 
     let mut splits = vec![Chunk { offset: 0, text }];
     let mut matches = Vec::new();
-    for pattern in patterns {
+    for (i, pattern) in patterns.enumerate() {
         let mut next = Vec::new();
         for split in &splits {
             for m in pattern.regex.find_iter(split.text) {
@@ -32,7 +32,7 @@ pub fn match_patterns<'filter>(
                 matches.push(PatternMatch {
                     start: m.start() + split.offset,
                     end: m.end() + split.offset,
-                    filter: pattern,
+                    pattern_index: i,
                 });
                 next.push(Chunk {
                     offset: split.offset,
