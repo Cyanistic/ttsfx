@@ -1,5 +1,6 @@
 #![allow(clippy::needless_question_mark)]
 
+pub mod audio;
 pub mod cache;
 pub mod config;
 pub mod error;

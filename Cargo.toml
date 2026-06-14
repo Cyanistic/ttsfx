@@ -16,8 +16,7 @@ thiserror = "2"
 color-eyre = { version = "0.6", features = ["capture-spantrace"] }
 tracing = "0.1"
 
-# Audio: WAV encoding (hound), multi-format decoding + optional re-encoding (symphonia)
-hound = "3.5"
+# Audio: all decode/encode via ffmpeg subprocess
 futures-util = { version = "0.3", features = ["std"] }
 
 # Pattern matching (fancy-regex for lookaheads/advanced features)
