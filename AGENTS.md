@@ -252,7 +252,7 @@ Adding a field to `PatternConfig` automatically propagates: Config gets the defa
 ```
 text input → detect() (PatternEngine) → [(matched_text, pattern_id), ...]
               ↓
-each match → resolve() (SoundResolver) → Cache(PathBuf) | Generate(GenerateData)
+each match → resolve_sfx() (SoundResolver) → Cache(PathBuf) | Generate(GenerateData with recipe)
               ↓
 each source → decode() (AudioProcessor) → AudioSegment { samples, sample_rate }
               ↓

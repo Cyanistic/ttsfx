@@ -4,13 +4,16 @@ pub mod audio;
 pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod embed;
 pub mod error;
 pub mod handler;
 pub mod log_fmt;
 pub mod middleware;
 pub mod pattern;
-pub mod span_transform;
+pub mod recipe;
+pub mod reindex;
 pub mod resolver;
+pub mod span_transform;
 pub mod state;
 pub mod tracing_init;
 pub mod utils;
@@ -31,20 +34,16 @@ pub use error::Result;
 pub use tracing_init::init_tracing;
 
 /// Load config, build the router, and serve until shutdown.
-pub async fn run(listen: SocketAddr) -> Result<()> {
+pub async fn run(listen: SocketAddr, config_path: &std::path::Path) -> Result<()> {
     audio::check_ffmpeg().await?;
 
-    let config = Arc::new(config::Config::load()?);
+    let config = Arc::new(config::Config::load_from_path(config_path)?);
     info!(patterns = config.patterns.len(), "config loaded");
 
     let cache = cache::CacheIndex::new(config.overridable.cache_dir.clone()).await;
     let resolver = Arc::new(resolver::SoundResolver::new(config.clone(), cache.clone()));
 
-    let state = state::AppState {
-        config: config.clone(),
-        cache,
-        resolver,
-    };
+    let state = state::AppState::new(config.clone(), cache, resolver);
 
     let upstream = config
         .overridable

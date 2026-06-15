@@ -40,3 +40,8 @@ http = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
 uuid = { version = "1", features = ["v7"] }
+minijinja = { version = "2", default-features = false, features = ["serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+bytemuck = "1"
+strum = { version = "0.26", features = ["derive"] }

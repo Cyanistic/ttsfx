@@ -10,7 +10,8 @@ use tracing_subscriber::{filter::LevelFilter, prelude::*, EnvFilter};
 /// Filter precedence:
 /// - Default ceiling: **WARN** for everything
 /// - **`RUST_LOG`**: standard `tracing_subscriber` directives (merged via `from_env_lossy`)
-/// - **`TTSFX_LOG`**: level for this crate only (default **`debug`**), e.g. `info`, `debug`, `trace`
+/// - **`TTSFX_LOG`**: level for **`ttsfx` only** (default **`debug`**). `RUST_LOG=trace` does **not**
+///   raise `ttsfx` unless you also set `TTSFX_LOG=trace` (or `RUST_LOG=ttsfx=trace`).
 /// - Extra `directives` from the binary (e.g. `["hyper=warn"]`)
 ///
 /// Formatting:

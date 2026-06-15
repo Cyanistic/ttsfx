@@ -1,8 +1,15 @@
-use crate::config::{MatchMode, PatternConfig, PatternFilter};
+use std::ops::Deref;
+
+use bytemuck::{self, PodCastError};
+use crate::config::{PatternFilter, default_cache_tag};
 use crate::error::ResultExt;
-use crate::{Result, err, bail};
+use crate::{Result, bail, err};
+use chrono::{DateTime, Utc};
 use notify::{Event, EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
+use serde_with::base64::Base64;
+use serde_with::{serde_as, skip_serializing_none, TryFromIntoRef};
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
@@ -13,7 +20,82 @@ use tracing::{debug, info, warn};
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "ogg", "flac"];
 
+fn is_audio_path(p: &Path) -> bool {
+    let Some(name) = p.file_name().and_then(|n| n.to_str()) else {
+        return false;
+    };
+    if name.contains(".tmp.") {
+        return false;
+    }
+    p.extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext))
+}
+
+/// Paths to audio files directly under `dir` (non-recursive). Missing or non-directory → empty.
+pub fn audio_paths_in_dir(dir: &Path) -> Vec<PathBuf> {
+    let Ok(d) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    d.flatten()
+        .map(|e| e.path())
+        .filter(|p| is_audio_path(p))
+        .collect()
+}
+
+/// Normalize matched substring for Levenshtein cache identity.
+pub fn normalize_match_text(text: &str) -> String {
+    text.trim().to_lowercase()
+}
+
+/// Cache embedding vector. JSON/ffmpeg tags: LE `f32` bytes as standard base64.
+#[serde_as]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Embeddings(#[serde_as(as = "TryFromIntoRef<Wire>")] Vec<f32>);
+
+#[serde_as]
+#[derive(Serialize, Deserialize)]
+#[serde(transparent)]
+struct Wire(#[serde_as(as = "Base64")] Vec<u8>);
+
+impl From<&Vec<f32>> for Wire {
+    fn from(v: &Vec<f32>) -> Self {
+        Wire(bytemuck::cast_slice::<f32, u8>(v.as_slice()).to_vec())
+    }
+}
+
+impl TryFrom<Wire> for Vec<f32> {
+    type Error = PodCastError;
+
+    fn try_from(Wire(bytes): Wire) -> Result<Self, Self::Error> {
+        Ok(bytemuck::try_cast_slice(bytes.as_slice())?.to_vec())
+    }
+}
+
+impl From<Vec<f32>> for Embeddings {
+    fn from(v: Vec<f32>) -> Self {
+        Self(v)
+    }
+}
+
+impl Embeddings {
+    pub fn as_slice(&self) -> &[f32] {
+        &self.0
+    }
+}
+
+impl Deref for Embeddings {
+    type Target = [f32];
+
+    fn deref(&self) -> &[f32] {
+        &self.0
+    }
+}
+
 /// Metadata embedded into audio files via ffmpeg tags.
+#[serde_as]
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CacheMeta {
     pub matched_text: String,
@@ -21,6 +103,16 @@ pub struct CacheMeta {
     pub context: Option<String>,
     #[serde(default)]
     pub version: String,
+    #[serde(default = "default_cache_tag")]
+    pub cache_tag: String,
+    #[serde(default)]
+    pub recipe: String,
+    #[serde(default)]
+    pub embed_model: Option<String>,
+    #[serde(default)]
+    pub embedded_at: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub embedding: Option<Embeddings>,
 }
 
 /// A cached audio entry: metadata + the audio file path.
@@ -40,6 +132,7 @@ pub struct CacheIndex {
 impl CacheIndex {
     /// Create a new CacheIndex. Loads initial entries and starts the filesystem watcher.
     pub async fn new(cache_dir: PathBuf) -> Self {
+        let _ = tokio::fs::create_dir_all(&cache_dir).await;
         let (tx, rx) = watch::channel(Vec::new());
 
         let initial = Self::load_from_dir(&cache_dir).await;
@@ -51,31 +144,48 @@ impl CacheIndex {
         Self { rx }
     }
 
-    /// Find the best matching cache entry for a pattern + text.
-    /// Returns the closest match within the distance threshold.
-    pub fn find_match(
+    /// Levenshtein cache lookup within `filter.cache_tag` (used when `match_mode` is Levenshtein).
+    /// Embedding mode uses [`find_match_embedding`](Self::find_match_embedding) from `resolve_sfx` after HTTP embed.
+    pub fn find_match_levenshtein(
         &self,
-        // Reserved for future per-pattern dispatch (e.g. embeddings vector search,
-        // pattern-specific similarity strategies). Currently unused by Levenshtein mode.
-        _filter: &PatternFilter,
-        base: &PatternConfig,
+        filter: &PatternFilter,
+        threshold: usize,
         text: &str,
     ) -> Option<CacheEntry> {
-        let threshold = match &base.match_mode {
-            MatchMode::Levenshtein(m) => m.threshold,
-            MatchMode::Embeddings(_) => unreachable!("validated at config load"),
-        };
-
+        let tag = &filter.cache_tag;
+        let needle = normalize_match_text(text);
         let entries = self.rx.borrow();
-        let text_lower = text.to_lowercase();
         entries
             .iter()
+            .filter(|e| e.meta.cache_tag == *tag)
             .map(|e| {
-                let dist = strsim::levenshtein(&text_lower, &e.meta.matched_text.to_lowercase());
+                let dist =
+                    strsim::levenshtein(&needle, &normalize_match_text(&e.meta.matched_text));
                 (dist, e)
             })
             .filter(|(dist, _)| *dist <= threshold)
             .min_by_key(|(dist, _)| *dist)
+            .map(|(_, e)| e.clone())
+    }
+
+    pub fn find_match_embedding(
+        &self,
+        filter: &PatternFilter,
+        threshold: f32,
+        query: &[f32],
+    ) -> Option<CacheEntry> {
+        let tag = &filter.cache_tag;
+        let entries = self.rx.borrow();
+        entries
+            .iter()
+            .filter(|e| e.meta.cache_tag == *tag)
+            .filter_map(|e| {
+                let emb = e.meta.embedding.as_ref()?;
+                let score = crate::embed::cosine_similarity(query, emb.as_slice());
+                Some((score, e))
+            })
+            .filter(|(score, _)| *score >= threshold)
+            .max_by(|(a, _), (b, _)| a.partial_cmp(b).unwrap_or(Ordering::Equal))
             .map(|(_, e)| e.clone())
     }
 
@@ -84,8 +194,8 @@ impl CacheIndex {
         self.rx.borrow().len()
     }
 
-    /// Load a single cache entry by reading metadata from the audio file via ffmpeg.
-    async fn load_entry(audio_path: &Path) -> Result<CacheEntry> {
+    /// Load a single cache entry from an audio file path.
+    pub async fn load_entry(audio_path: &Path) -> Result<CacheEntry> {
         let meta = read_metadata(audio_path).await?;
         Ok(CacheEntry {
             meta,
@@ -95,19 +205,7 @@ impl CacheIndex {
 
     /// Load all cache entries from audio files in the directory.
     async fn load_from_dir(dir: &Path) -> Vec<CacheEntry> {
-        let paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
-            Ok(d) => d
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| {
-                    p.extension()
-                        .and_then(|e| e.to_str())
-                        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext))
-                })
-                .collect(),
-            Err(_) => return Vec::new(),
-        };
-
+        let paths = audio_paths_in_dir(dir);
         let mut entries = Vec::new();
         for p in paths {
             if let Ok(entry) = Self::load_entry(&p).await.warn() {
@@ -155,32 +253,18 @@ impl CacheIndex {
 
             for event in &events {
                 match &event.kind {
-                    EventKind::Create(_) => {
+                    EventKind::Create(_) | EventKind::Modify(_) => {
                         for path in &event.paths {
-                            let is_audio = path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext));
-                            if !is_audio {
+                            if !is_audio_path(path) {
                                 continue;
                             }
-                            if let Ok(entry) = Self::load_entry(path).await.warn() {
-                                map.insert(path.clone(), entry);
-                            }
-                        }
-                    }
-                    EventKind::Modify(_) => {
-                        for path in &event.paths {
-                            let is_audio = path
-                                .extension()
-                                .and_then(|e| e.to_str())
-                                .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext));
-                            if !is_audio {
+                            if path
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                                .is_some_and(|n| n.contains(".tmp."))
+                            {
                                 continue;
                             }
-                            // On modify, failure is likely transient (e.g. file locked
-                            // by ffmpeg during metadata write). Skip the update — keep
-                            // the old valid entry instead of evicting it.
                             if let Ok(entry) = Self::load_entry(path).await.warn() {
                                 map.insert(path.clone(), entry);
                             }

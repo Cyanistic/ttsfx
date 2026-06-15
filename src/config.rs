@@ -4,7 +4,7 @@ use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_with::{DisplayFromStr, VecSkipError, serde_as};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Default config template embedded from disk.
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
@@ -38,6 +38,10 @@ pub fn volume_gain(db: f64) -> f32 {
     10.0_f64.powf(db / 20.0) as f32
 }
 
+pub fn default_cache_tag() -> String {
+    "default".into()
+}
+
 /// A compiled pattern filter rule for detecting onomatopoeia in text.
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -47,6 +51,12 @@ pub struct PatternFilter {
     /// Higher = checked first (descending sort at startup).
     #[serde(default)]
     pub priority: u32,
+    /// Cache lookup scope; entries only match within the same tag.
+    #[serde(default = "default_cache_tag")]
+    pub cache_tag: String,
+    /// Cosmetic labels for recipe templates only; pattern-level only (not in `[overridable]` or `overrides`).
+    #[serde(default)]
+    pub tags: Vec<String>,
     /// Compiled fancy-regex pattern (e.g. r"\bboom\b").
     #[serde_as(as = "DisplayFromStr")]
     pub regex: Regex,
@@ -63,6 +73,7 @@ pub struct ConfigPatternFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PatternConfig {
     /// TTS backend URL (e.g. "https://api.openai.com/v1").
     pub tts_base_url: String,
@@ -91,14 +102,54 @@ pub struct PatternConfig {
     /// Linear crossfade duration (ms) at joins involving this pattern's SFX. `0` = hard join at that boundary.
     #[serde(default = "default_crossfade_ms")]
     pub crossfade_ms: u32,
+
+    /// How to slice surrounding text for recipe templates.
+    #[serde(default)]
+    pub context: ContextExtraction,
+
+    /// Minijinja template for ElevenLabs + embeddings; default `{{ text }}` when unset.
+    pub sfx_prompt_template: Option<String>,
+
+    /// Optional ElevenLabs `duration_seconds` on sound-generation.
+    pub sfx_duration_seconds: Option<f32>,
+
+    /// OpenAI-compatible embeddings API base (e.g. `http://127.0.0.1:8080/v1`).
+    #[serde(default)]
+    pub embed_base_url: String,
+
+    #[serde(default = "default_embed_model")]
+    pub embed_model: String,
+
+    #[serde(default = "default_embed_api_key")]
+    pub embed_api_key: SecretSource,
 }
 
 fn default_crossfade_ms() -> u32 {
     12
 }
 
+fn default_embed_model() -> String {
+    "text-embedding-3-small".into()
+}
+
+fn default_embed_api_key() -> SecretSource {
+    SecretSource::Literal(String::new())
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(tag = "mode", rename_all = "snake_case")]
+pub enum ContextExtraction {
+    #[default]
+    None,
+    Chars {
+        before: usize,
+        after: usize,
+    },
+    Sentence,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "mode")]
+#[serde(tag = "mode", rename_all = "snake_case")]
 pub enum MatchMode {
     Levenshtein(LevenshteinMode),
     Embeddings(EmbeddingMode),
@@ -126,6 +177,12 @@ impl Default for PatternConfig {
             sfx_prompt_influence: 0.8,
             sfx_output_format: "mp3_44100_128".into(),
             crossfade_ms: default_crossfade_ms(),
+            context: ContextExtraction::default(),
+            sfx_prompt_template: None,
+            sfx_duration_seconds: None,
+            embed_base_url: String::new(),
+            embed_model: default_embed_model(),
+            embed_api_key: SecretSource::Literal(String::new()),
         }
     }
 }
@@ -151,11 +208,14 @@ pub fn default_sample_rate() -> u32 {
 }
 
 impl Config {
-    /// Load configuration using layered defaults + TOML file.
+    /// Load configuration using layered defaults + TOML file (`config.toml` by default).
     pub fn load() -> Result<Self> {
-        // Write default config on first run if no config.toml exists.
-        let path = std::path::Path::new("config.toml");
-        if !path.exists() {
+        Self::load_from_path(Path::new("config.toml"))
+    }
+
+    /// Load from a specific TOML path. Only writes the embedded default when the path is `config.toml` and missing.
+    pub fn load_from_path(path: &Path) -> Result<Self> {
+        if path == Path::new("config.toml") && !path.exists() {
             std::fs::write(path, DEFAULT_CONFIG)
                 .map_err(|e| err!(Io, "failed to write default config: {}", e))?;
         }
@@ -163,12 +223,12 @@ impl Config {
         let settings = ConfigBuilder::builder()
             .add_source(Environment::with_prefix("TTSFX"))
             .add_source(
-                File::with_name("config")
+                File::from(path)
                     .format(FileFormat::Toml)
-                    .required(false),
+                    .required(true),
             )
             .build()
-            .map_err(|e| err!(Configuration, "failed to build config: {}", e))?;
+            .map_err(|e| err!(Configuration, "failed to build config from {}", path.display(), @external: e))?;
 
         let raw: Config = settings
             .try_deserialize()
@@ -178,6 +238,14 @@ impl Config {
     }
 
     fn from_raw(mut raw: Config) -> Result<Self> {
+        if matches!(raw.overridable.match_mode, MatchMode::Embeddings(_))
+            && raw.overridable.embed_base_url.trim().is_empty()
+        {
+            return Err(err!(
+                Configuration,
+                "embed_base_url is required when match_mode is Embeddings"
+            ));
+        }
         raw.patterns
             .sort_by(|a, b| b.filter.priority.cmp(&a.filter.priority));
         Ok(raw)

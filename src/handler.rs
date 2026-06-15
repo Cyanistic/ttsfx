@@ -1,8 +1,10 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use chrono::Utc;
+
 use crate::audio::{self, AudioSegment};
-use crate::cache::{CacheMeta, write_metadata};
+use crate::cache::{CacheMeta, Embeddings, write_metadata};
 use crate::config::volume_gain;
 
 use crate::pattern::{PatternMatch, match_patterns};
@@ -19,7 +21,9 @@ use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::join_all;
 use serde_with::skip_serializing_none;
-use tracing::{debug, info};
+use std::time::Duration;
+use tracing::info;
+use tokio::time::timeout;
 
 use serde::{Deserialize, Serialize};
 
@@ -115,11 +119,18 @@ pub async fn handle_speech(
         Validation,
         "no audio fragments to synthesize"
     );
-    debug!(
-        sfx_matches = matches.len(),
-        fragments = fragments.len(),
-        "speech request split"
-    );
+    if matches.is_empty() {
+        info!(
+            fragments = fragments.len(),
+            "no onomatopoeia matched; entire input sent to TTS"
+        );
+    } else {
+        info!(
+            sfx_matches = matches.len(),
+            fragments = fragments.len(),
+            "speech request split into TTS and SFX fragments"
+        );
+    }
 
     let sample_rate = state.config.sample_rate;
     let settings = body.settings.clone();
@@ -132,7 +143,17 @@ pub async fn handle_speech(
             let state = state.clone();
             let settings = settings.clone();
             let forward_headers = Arc::clone(&forward_headers);
-            async move { resolve_fragment(&state, frag, &settings, forward_headers.as_ref()).await }
+            let full_input = body.input.clone();
+            async move {
+                resolve_fragment(
+                    &state,
+                    frag,
+                    &settings,
+                    forward_headers.as_ref(),
+                    &full_input,
+                )
+                .await
+            }
         })
         .collect();
 
@@ -141,16 +162,35 @@ pub async fn handle_speech(
         .into_iter()
         .collect::<Result<Vec<_>>>()?;
 
-    let mut segments: Vec<AudioSegment> = Vec::new();
-    let mut crossfade_ms: Vec<u32> = Vec::new();
-    let mut ref_rms: Option<f32> = None;
+    info!(fragments = resolved.len(), "all fragments resolved, decoding audio");
 
-    for item in resolved {
-        crossfade_ms.push(item.crossfade_ms);
-        let mut seg = match item.audio {
-            ResolvedAudio::Bytes(b) => audio::decode(&b, sample_rate).await?,
-            ResolvedAudio::File(p) => audio::decode_file(&p, sample_rate).await?,
+    let mut decoded: Vec<AudioSegment> = Vec::with_capacity(resolved.len());
+    for (i, item) in resolved.iter().enumerate() {
+        let kind = format!("{:?}", item.kind);
+        let label = match &item.audio {
+            ResolvedAudio::Bytes(b) => format!("bytes={}", b.len()),
+            ResolvedAudio::File(p) => format!("file={}", p.display()),
         };
+        info!(index = i, kind = %kind, %label, "decoding fragment");
+        let fut = async {
+            match &item.audio {
+                ResolvedAudio::Bytes(b) => audio::decode(b, sample_rate).await,
+                ResolvedAudio::File(p) => audio::decode_file(p, sample_rate).await,
+            }
+        };
+        let seg = timeout(Duration::from_secs(60), fut)
+            .await
+            .map_err(|_| err!(Internal, "ffmpeg decode timed out after 60s"))??;
+        info!(index = i, samples = seg.samples.len(), "decoded fragment");
+        decoded.push(seg);
+    }
+
+    let mut ref_rms: Option<f32> = None;
+    let mut segments: Vec<AudioSegment> = Vec::with_capacity(decoded.len());
+    let mut crossfade_ms: Vec<u32> = Vec::with_capacity(decoded.len());
+
+    for (item, mut seg) in resolved.into_iter().zip(decoded) {
+        crossfade_ms.push(item.crossfade_ms);
         if item.kind == FragmentKind::Tts {
             if ref_rms.is_none() {
                 ref_rms = Some(audio::rms_level(&seg.samples));
@@ -218,6 +258,8 @@ fn build_fragments(input: &str, matches: &[PatternMatch]) -> Vec<Fragment> {
         out.push(Fragment::Sfx {
             pattern_index: m.pattern_index,
             text: input[m.start..m.end].to_string(),
+            start: m.start,
+            end: m.end,
         });
         cursor = m.end;
     }
@@ -242,12 +284,16 @@ async fn resolve_fragment(
     frag: Fragment,
     settings: &TtsSettings,
     forward_headers: &HeaderMap,
+    full_input: &str,
 ) -> Result<FragmentOutcome> {
+    let kind = FragmentKind::from(&frag);
     match frag {
         Fragment::Tts { text } => {
+            info!(kind = "tts", chars = text.len(), "resolving fragment");
             let bytes = forward_tts(state, settings, &text, forward_headers).await?;
+            info!(kind = "tts", bytes = bytes.len(), "fragment ready");
             Ok(FragmentOutcome {
-                kind: FragmentKind::Tts,
+                kind,
                 audio: ResolvedAudio::Bytes(bytes),
                 volume_db: state.config.overridable.volume_target_db,
                 crossfade_ms: 0,
@@ -256,23 +302,30 @@ async fn resolve_fragment(
         Fragment::Sfx {
             pattern_index,
             text,
+            start,
+            end,
         } => {
+            info!(kind = "sfx", text = %text, "resolving fragment");
             let m = PatternMatch {
-                start: 0,
-                end: text.len(),
+                start,
+                end,
                 pattern_index,
             };
-            match state.resolver.resolve(&m, &text) {
-                Resolution::Cache(hit) => Ok(FragmentOutcome {
-                    kind: FragmentKind::Sfx,
-                    audio: ResolvedAudio::File(hit.path),
-                    volume_db: hit.volume_db,
-                    crossfade_ms: hit.crossfade_ms,
-                }),
+            match state.resolver.resolve_sfx(&m, full_input, &text).await? {
+                Resolution::Cache(hit) => {
+                    info!(kind = "sfx", path = %hit.path.display(), "fragment ready (cache)");
+                    Ok(FragmentOutcome {
+                        kind,
+                        audio: ResolvedAudio::File(hit.path),
+                        volume_db: hit.volume_db,
+                        crossfade_ms: hit.crossfade_ms,
+                    })
+                }
                 Resolution::Generate(generate_data) => {
                     let (bytes, _path) = generate_and_cache(state, &generate_data).await?;
+                    info!(kind = "sfx", bytes = bytes.len(), "fragment ready (generated)");
                     Ok(FragmentOutcome {
-                        kind: FragmentKind::Sfx,
+                        kind,
                         audio: ResolvedAudio::Bytes(bytes),
                         volume_db: generate_data.pattern_config.volume_target_db,
                         crossfade_ms: generate_data.pattern_config.crossfade_ms,
@@ -299,7 +352,6 @@ async fn forward_tts(
         "{}/audio/speech",
         state.config.overridable.tts_base_url.trim_end_matches('/')
     );
-    let client = reqwest::Client::new();
     let body = UpstreamSpeechBody {
         model: &settings.model,
         voice: &settings.voice,
@@ -309,7 +361,7 @@ async fn forward_tts(
         speed: settings.speed,
         normalization_options: settings.normalization_options.clone(),
     };
-    let mut req = client.post(&url).json(&body);
+    let mut req = state.http.post(&url).json(&body);
     for (name, value) in forward_headers.iter() {
         req = req.header(name, value);
     }
@@ -343,10 +395,25 @@ async fn generate_and_cache(
     tokio::fs::write(&filepath, &audio_bytes)
         .await
         .map_err(|e| err!(Io, "failed to write cache file: {}", filepath.display(), @source: e))?;
+    let (embed_model, embedded_at, embedding) = if let Some(ref emb) = generate_data.query_embedding
+    {
+        (
+            Some(generate_data.pattern_config.embed_model.clone()),
+            Some(Utc::now()),
+            Some(Embeddings::from(emb.clone())),
+        )
+    } else {
+        (None, None, None)
+    };
     let meta = CacheMeta {
         matched_text: generate_data.text.clone(),
         context: None,
         version: String::new(),
+        cache_tag: generate_data.cache_tag.clone(),
+        recipe: generate_data.recipe.clone(),
+        embed_model,
+        embedded_at,
+        embedding,
     };
     write_metadata(&filepath, &meta).await?;
     info!(path = %filepath.display(), bytes = audio_bytes.len(), "sfx cached");

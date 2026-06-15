@@ -2,7 +2,6 @@ use crate::{Result, bail, err};
 use std::path::Path;
 use tracing::debug;
 use std::process::Stdio;
-use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 /// A decoded audio segment with f32 samples.
@@ -28,47 +27,16 @@ pub async fn check_ffmpeg() -> Result<()> {
     Ok(())
 }
 
-/// Decode any audio format to f32 samples via ffmpeg.
+/// Decode in-memory audio via a temp file. Piping large Kokoro WAVs into ffmpeg deadlocks when
+/// stdout fills while stdin is still being written.
 pub async fn decode(bytes: &[u8], target_rate: u32) -> Result<AudioSegment> {
-    let mut child = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-i",
-            "pipe:0",
-            "-f",
-            "s16le",
-            "-ar",
-            &target_rate.to_string(),
-            "-ac",
-            "1",
-            "pipe:1",
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| err!(Internal, "failed to spawn ffmpeg", @external: e))?;
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(bytes)
-            .await
-            .map_err(|e| err!(Internal, "failed to write to ffmpeg stdin", @external: e))?;
-    }
-
-    let output = child
-        .wait_with_output()
+    let path = std::env::temp_dir().join(format!("ttsfx-decode-{}.wav", uuid::Uuid::now_v7()));
+    tokio::fs::write(&path, bytes)
         .await
-        .map_err(|e| err!(Internal, "ffmpeg process failed", @external: e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(AudioDecodeError, "ffmpeg decode failed: {}", stderr);
-    }
-
-    parse_pcm_s16le(&output.stdout, target_rate)
+        .map_err(|e| err!(Io, "failed to write temp audio for decode", @source: e))?;
+    let result = decode_file(&path, target_rate).await;
+    let _ = tokio::fs::remove_file(&path).await;
+    result
 }
 
 /// Decode a file on disk via ffmpeg.
@@ -276,7 +244,7 @@ pub async fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Generic ffmpeg encode: pipe raw PCM in, get encoded bytes out.
+/// Encode via ffmpeg reading PCM from a temp file (avoids stdin/stdout pipe deadlock on long audio).
 async fn encode_ffmpeg(
     samples: &[f32],
     sample_rate: u32,
@@ -292,7 +260,13 @@ async fn encode_ffmpeg(
         })
         .collect();
 
+    let pcm_path = std::env::temp_dir().join(format!("ttsfx-encode-{}.pcm", uuid::Uuid::now_v7()));
+    tokio::fs::write(&pcm_path, &pcm)
+        .await
+        .map_err(|e| err!(Io, "failed to write temp PCM for encode", @source: e))?;
+
     let rate_str = sample_rate.to_string();
+    let pcm_path_str = pcm_path.to_string_lossy();
     let mut args = vec![
         "-hide_banner",
         "-loglevel",
@@ -300,11 +274,11 @@ async fn encode_ffmpeg(
         "-f",
         "s16le",
         "-ar",
-        &rate_str,
+        rate_str.as_str(),
         "-ac",
         "1",
         "-i",
-        "pipe:0",
+        pcm_path_str.as_ref(),
         "-f",
         format,
         "-acodec",
@@ -313,31 +287,28 @@ async fn encode_ffmpeg(
     args.extend_from_slice(extra_args);
     args.push("pipe:1");
 
-    let mut child = Command::new("ffmpeg")
-        .args(&args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| {
-            err!(
-                Internal,
-                "failed to spawn ffmpeg for encoding",
-                @external: e
-            )
-        })?;
+    let output = {
+        let child = Command::new("ffmpeg")
+            .args(&args)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| {
+                err!(
+                    Internal,
+                    "failed to spawn ffmpeg for encoding",
+                    @external: e
+                )
+            })?;
 
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin
-            .write_all(&pcm)
+        child
+            .wait_with_output()
             .await
-            .map_err(|e| err!(Internal, "failed to write PCM to ffmpeg", @external: e))?;
-    }
+            .map_err(|e| err!(Internal, "ffmpeg encode failed", @external: e))?
+    };
 
-    let output = child
-        .wait_with_output()
-        .await
-        .map_err(|e| err!(Internal, "ffmpeg encode failed", @external: e))?;
+    let _ = tokio::fs::remove_file(&pcm_path).await;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
