@@ -1,7 +1,7 @@
 use crate::cache::CacheIndex;
 use crate::config::{Config, PatternConfig};
 use crate::pattern::PatternMatch;
-use crate::{Result, bail, err};
+use crate::{Result, err};
 use reqwest::Client;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -20,6 +20,7 @@ pub enum Resolution {
 pub struct CacheHit {
     pub path: PathBuf,
     pub volume_db: f64,
+    pub crossfade_ms: u32,
 }
 
 /// Data needed to generate a new sound effect.
@@ -62,6 +63,7 @@ impl SoundResolver {
                 self.config.overridable.clone()
             });
         let volume_db = pattern_config.volume_target_db;
+        let crossfade_ms = pattern_config.crossfade_ms;
 
         // Try cache lookup
         if let Some(entry) = self
@@ -72,6 +74,7 @@ impl SoundResolver {
             return Resolution::Cache(CacheHit {
                 path: entry.filepath,
                 volume_db,
+                crossfade_ms,
             });
         }
 
@@ -86,18 +89,17 @@ impl SoundResolver {
 
     /// Generate a sound effect via ElevenLabs API.
     pub async fn generate(&self, request: &GenerateData) -> Result<Vec<u8>> {
-        let api_key = &request.pattern_config.sfx_api_key;
-        if api_key.is_empty() {
-            bail!(Configuration, "sfx_api_key is not configured");
-        }
+        let api_key = request.pattern_config.sfx_api_key.resolve()?;
 
         let base = request.pattern_config.sfx_base_url.trim_end_matches('/');
         let format = &request.pattern_config.sfx_output_format;
         let url = format!("{base}/v1/sound-generation?output_format={format}");
-        let resp = self
-            .client
-            .post(&url)
-            .header("xi-api-key", api_key)
+        let mut req = self.client.post(&url);
+        if !api_key.is_empty() {
+            req = req.header("xi-api-key", api_key);
+        }
+
+        let resp = req
             .json(&serde_json::json!({
                 "text": request.text,
                 "prompt_influence": request.pattern_config.sfx_prompt_influence,

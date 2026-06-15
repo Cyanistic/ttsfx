@@ -9,6 +9,30 @@ use std::path::PathBuf;
 /// Default config template embedded from disk.
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
 
+/// Secret resolved at config load: inline string or `env = "VAR_NAME"`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SecretSource {
+    Literal(String),
+    FromEnv { env: String },
+}
+
+impl SecretSource {
+    pub fn resolve(&self) -> Result<String> {
+        match self {
+            SecretSource::Literal(value) => Ok(value.clone()),
+            SecretSource::FromEnv { env } => std::env::var(env).map_err(|e| {
+                err!(
+                    Configuration,
+                    "environment variable `{}` is not set or not valid UTF-8",
+                    env,
+                    @external: e
+                )
+            }),
+        }
+    }
+}
+
 /// Compute linear gain from dB target: 10^(db/20).
 pub fn volume_gain(db: f64) -> f32 {
     10.0_f64.powf(db / 20.0) as f32
@@ -46,8 +70,8 @@ pub struct PatternConfig {
     /// ElevenLabs SFX API base URL (e.g. "https://api.elevenlabs.io").
     pub sfx_base_url: String,
 
-    /// ElevenLabs API key (from env var or config file).
-    pub sfx_api_key: String,
+    /// ElevenLabs API key: `sfx_api_key = "…"` or `sfx_api_key = { env = "VAR" }`.
+    pub sfx_api_key: SecretSource,
 
     /// dB target for all segments before concat (default -16.0).
     pub volume_target_db: f64,
@@ -63,6 +87,14 @@ pub struct PatternConfig {
 
     /// SFX API `output_format` query value (e.g. `mp3`, `wav_48000`). Response must be a container ffmpeg can probe.
     pub sfx_output_format: String,
+
+    /// Linear crossfade duration (ms) at joins involving this pattern's SFX. `0` = hard join at that boundary.
+    #[serde(default = "default_crossfade_ms")]
+    pub crossfade_ms: u32,
+}
+
+fn default_crossfade_ms() -> u32 {
+    12
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -87,12 +119,13 @@ impl Default for PatternConfig {
         Self {
             tts_base_url: "https://api.openai.com/v1".into(),
             sfx_base_url: "https://api.elevenlabs.io".into(),
-            sfx_api_key: String::new(),
-            volume_target_db: -16.0,
+            sfx_api_key: SecretSource::Literal(String::new()),
+            volume_target_db: 0.0,
             cache_dir: PathBuf::from("sound_cache"),
             match_mode: MatchMode::Levenshtein(LevenshteinMode { threshold: 1 }),
-            sfx_prompt_influence: 0.3,
-            sfx_output_format: "mp3".into(),
+            sfx_prompt_influence: 0.8,
+            sfx_output_format: "mp3_44100_128".into(),
+            crossfade_ms: default_crossfade_ms(),
         }
     }
 }

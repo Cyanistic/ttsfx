@@ -2,8 +2,9 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::audio::{self, AudioSegment};
-use crate::cache::{CacheMeta, write_metadata};
 use crate::config::volume_gain;
+use crate::cache::{CacheMeta, write_metadata};
+
 use crate::pattern::{PatternMatch, match_patterns};
 use crate::resolver::{GenerateData, Resolution};
 use crate::state::{AppState, Fragment, FragmentKind, ResolvedAudio};
@@ -94,9 +95,11 @@ pub async fn handle_speech(
         .collect::<Result<Vec<_>>>()?;
 
     let mut segments: Vec<AudioSegment> = Vec::new();
+    let mut crossfade_ms: Vec<u32> = Vec::new();
     let mut ref_rms: Option<f32> = None;
 
     for item in resolved {
+        crossfade_ms.push(item.crossfade_ms);
         let mut seg = match item.audio {
             ResolvedAudio::Bytes(b) => audio::decode(&b, sample_rate).await?,
             ResolvedAudio::File(p) => audio::decode_file(&p, sample_rate).await?,
@@ -115,7 +118,15 @@ pub async fn handle_speech(
         segments.push(seg);
     }
 
-    let merged = audio::concat_segments(segments)
+    let join_crossfade_ms: Vec<u32> = (0..segments.len().saturating_sub(1))
+        .map(|i| crossfade_for_join(crossfade_ms[i], crossfade_ms[i + 1]))
+        .collect();
+    let join_crossfade_samples: Vec<usize> = join_crossfade_ms
+        .iter()
+        .map(|ms| ms_to_samples(*ms, sample_rate))
+        .collect();
+
+    let merged = audio::concat_segments_crossfaded_variable(segments, &join_crossfade_samples)
         .map_err(|_| err!(Internal, "audio segments sample rate or channel mismatch"))?;
 
     let format = body.response_format;
@@ -130,6 +141,15 @@ pub async fn handle_speech(
         bytes,
     )
         .into_response())
+}
+
+fn ms_to_samples(ms: u32, sample_rate: u32) -> usize {
+    (ms as u64 * sample_rate as u64 / 1000) as usize
+}
+
+/// Crossfade when either side of the join is SFX (uses that pattern's `crossfade_ms`).
+fn crossfade_for_join(left_ms: u32, right_ms: u32) -> u32 {
+    left_ms.max(right_ms)
 }
 
 fn build_fragments(input: &str, matches: &[PatternMatch]) -> Vec<Fragment> {
@@ -161,6 +181,7 @@ struct FragmentOutcome {
     kind: FragmentKind,
     audio: ResolvedAudio,
     volume_db: f64,
+    crossfade_ms: u32,
 }
 
 async fn resolve_fragment(
@@ -176,6 +197,7 @@ async fn resolve_fragment(
                 kind: FragmentKind::Tts,
                 audio: ResolvedAudio::Bytes(bytes),
                 volume_db: state.config.overridable.volume_target_db,
+                crossfade_ms: 0,
             })
         }
         Fragment::Sfx {
@@ -192,6 +214,7 @@ async fn resolve_fragment(
                     kind: FragmentKind::Sfx,
                     audio: ResolvedAudio::File(hit.path),
                     volume_db: hit.volume_db,
+                    crossfade_ms: hit.crossfade_ms,
                 }),
                 Resolution::Generate(generate_data) => {
                     let (bytes, _path) = generate_and_cache(state, &generate_data).await?;
@@ -199,6 +222,7 @@ async fn resolve_fragment(
                         kind: FragmentKind::Sfx,
                         audio: ResolvedAudio::Bytes(bytes),
                         volume_db: generate_data.pattern_config.volume_target_db,
+                        crossfade_ms: generate_data.pattern_config.crossfade_ms,
                     })
                 }
             }

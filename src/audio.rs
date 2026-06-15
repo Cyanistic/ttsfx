@@ -35,9 +35,7 @@ pub async fn decode(bytes: &[u8], target_rate: u32) -> Result<AudioSegment> {
             "-i",
             "pipe:0",
             "-f",
-            "wav",
-            "-acodec",
-            "pcm_s16le",
+            "s16le",
             "-ar",
             &target_rate.to_string(),
             "-ac",
@@ -67,7 +65,7 @@ pub async fn decode(bytes: &[u8], target_rate: u32) -> Result<AudioSegment> {
         bail!(AudioDecodeError, "ffmpeg decode failed: {}", stderr);
     }
 
-    parse_wav_pcm(&output.stdout, target_rate)
+    parse_pcm_s16le(&output.stdout, target_rate)
 }
 
 /// Decode a file on disk via ffmpeg.
@@ -80,9 +78,7 @@ pub async fn decode_file(path: &Path, target_rate: u32) -> Result<AudioSegment> 
             "-i",
             &path.to_string_lossy(),
             "-f",
-            "wav",
-            "-acodec",
-            "pcm_s16le",
+            "s16le",
             "-ar",
             &target_rate.to_string(),
             "-ac",
@@ -120,19 +116,18 @@ pub async fn decode_file(path: &Path, target_rate: u32) -> Result<AudioSegment> 
         );
     }
 
-    parse_wav_pcm(&output.stdout, target_rate)
+    parse_pcm_s16le(&output.stdout, target_rate)
 }
 
-/// Parse raw PCM s16le samples from a WAV byte slice into f32 samples.
-fn parse_wav_pcm(wav_bytes: &[u8], sample_rate: u32) -> Result<AudioSegment> {
-    if wav_bytes.len() < 44 {
+/// Parse raw little-endian s16le mono PCM from ffmpeg `-f s16le` output.
+fn parse_pcm_s16le(pcm_bytes: &[u8], sample_rate: u32) -> Result<AudioSegment> {
+    if pcm_bytes.len() % 2 != 0 {
         bail!(
             AudioDecodeError,
-            "ffmpeg output too small for WAV header ({} bytes)",
-            wav_bytes.len()
+            "ffmpeg PCM length is not aligned to 16-bit samples ({} bytes)",
+            pcm_bytes.len()
         );
     }
-    let pcm_bytes = &wav_bytes[44..];
     let num_samples = pcm_bytes.len() / 2;
     let samples: Vec<f32> = (0..num_samples)
         .map(|i| {
@@ -193,14 +188,89 @@ pub fn concat_segments(mut segments: Vec<AudioSegment>) -> Result<AudioSegment, 
     })
 }
 
+/// Concatenate with a linear crossfade per join. `crossfade_samples[i]` is the overlap between
+/// segment `i` and `i + 1`; length must be `segments.len().saturating_sub(1)`. `0` = hard join.
+pub fn concat_segments_crossfaded_variable(
+    segments: Vec<AudioSegment>,
+    crossfade_samples: &[usize],
+) -> Result<AudioSegment, Vec<AudioSegment>> {
+    if segments.is_empty() {
+        return Err(segments);
+    }
+    if segments.len() == 1 {
+        return Ok(segments.into_iter().next().unwrap());
+    }
+    if crossfade_samples.len() != segments.len() - 1 {
+        return Err(segments);
+    }
+
+    let rate = segments[0].sample_rate;
+    let channels = segments[0].channels;
+    if segments
+        .iter()
+        .any(|s| s.sample_rate != rate || s.channels != channels)
+    {
+        return Err(segments);
+    }
+
+    let mut out = segments[0].samples.clone();
+    for (seg, &cf) in segments.into_iter().skip(1).zip(crossfade_samples.iter()) {
+        let next = seg.samples;
+        if cf < 2 {
+            out.extend(next);
+            continue;
+        }
+        let n = cf.min(out.len()).min(next.len());
+        if n < 2 {
+            out.extend(next);
+            continue;
+        }
+        let tail_start = out.len() - n;
+        for i in 0..n {
+            let t = i as f32 / (n - 1) as f32;
+            let a = out[tail_start + i];
+            let b = next[i];
+            out[tail_start + i] = a * (1.0 - t) + b * t;
+        }
+        out.extend_from_slice(&next[n..]);
+    }
+
+    Ok(AudioSegment {
+        samples: out,
+        sample_rate: rate,
+        channels,
+    })
+}
+
 /// Encode f32 samples as MP3 via ffmpeg.
 pub async fn encode_mp3(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
     encode_ffmpeg(samples, sample_rate, "mp3", "libmp3lame", &["-q:a", "2"]).await
 }
 
-/// Encode f32 samples as WAV via ffmpeg.
+/// Encode f32 samples as 16-bit PCM WAV in memory (no ffmpeg — PCM is just header + samples).
 pub async fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
-    encode_ffmpeg(samples, sample_rate, "wav", "pcm_s16le", &[]).await
+    let pcm: Vec<i16> = samples
+        .iter()
+        .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+        .collect();
+    let data_size = pcm.len() * 2;
+    let mut out = Vec::with_capacity(44 + data_size);
+    out.extend_from_slice(b"RIFF");
+    out.extend_from_slice(&(36u32 + data_size as u32).to_le_bytes());
+    out.extend_from_slice(b"WAVEfmt ");
+    out.extend_from_slice(&16u32.to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
+    out.extend_from_slice(&1u16.to_le_bytes()); // mono
+    out.extend_from_slice(&sample_rate.to_le_bytes());
+    out.extend_from_slice(&(sample_rate * 2).to_le_bytes()); // byte rate
+    out.extend_from_slice(&2u16.to_le_bytes()); // block align
+    out.extend_from_slice(&16u16.to_le_bytes()); // bits per sample
+    out.extend_from_slice(b"data");
+    out.extend_from_slice(&(data_size as u32).to_le_bytes());
+    for s in pcm {
+        out.extend_from_slice(&s.to_le_bytes());
+    }
+    Ok(out)
 }
 
 /// Generic ffmpeg encode: pipe raw PCM in, get encoded bytes out.

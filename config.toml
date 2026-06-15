@@ -3,15 +3,21 @@
 
 [overridable]
 match_mode = { mode = "Levenshtein", threshold = 1 }
-tts_base_url = "https://api.openai.com/v1"
+tts_base_url = "http://192.168.1.253:8880/v1"
 sfx_base_url = "https://api.elevenlabs.io"
+sfx_api_key = { env = "ELEVENLABS_API_KEY" }
 # ElevenLabs sound-generation output_format (mp3, wav_48000, …). Must be a container ffmpeg can read.
-sfx_output_format = "mp3"
+sfx_output_format = "mp3_44100_128"
+# SFX level after RMS match to speech: 0 = same loudness, negative = quieter (default in code is -16 if unset)
+volume_target_db = 0
+# crossfade_ms = 12   # default at SFX joins; 0 = hard join
 
 [[patterns]]
 name = "boom"
 priority = 100
 regex = "\\b(?:BOOM|Boom)\\b"
+# [patterns.overrides]
+# crossfade_ms = 20
 
 [[patterns]]
 name = "crash"
