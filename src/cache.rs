@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::time::Duration;
+use tokio::process::Command;
 use tokio::sync::{mpsc, watch};
 use tracing::{debug, info, warn};
 
@@ -39,10 +39,10 @@ pub struct CacheIndex {
 
 impl CacheIndex {
     /// Create a new CacheIndex. Loads initial entries and starts the filesystem watcher.
-    pub fn new(cache_dir: PathBuf) -> Self {
+    pub async fn new(cache_dir: PathBuf) -> Self {
         let (tx, rx) = watch::channel(Vec::new());
 
-        let initial = Self::load_from_dir(&cache_dir);
+        let initial = Self::load_from_dir(&cache_dir).await;
         info!(count = initial.len(), "loaded cache entries");
         let _ = tx.send(initial);
 
@@ -63,10 +63,7 @@ impl CacheIndex {
     ) -> Option<CacheEntry> {
         let threshold = match &base.match_mode {
             MatchMode::Levenshtein(m) => m.threshold,
-            MatchMode::Embeddings(_) => {
-                warn!("embeddings match mode not yet supported, falling back to levenshtein");
-                1
-            }
+            MatchMode::Embeddings(_) => unreachable!("validated at config load"),
         };
 
         let entries = self.rx.borrow();
@@ -88,8 +85,8 @@ impl CacheIndex {
     }
 
     /// Load a single cache entry by reading metadata from the audio file via ffmpeg.
-    fn load_entry(audio_path: &Path) -> Result<CacheEntry> {
-        let meta = read_metadata(audio_path)?;
+    async fn load_entry(audio_path: &Path) -> Result<CacheEntry> {
+        let meta = read_metadata(audio_path).await?;
         Ok(CacheEntry {
             meta,
             filepath: audio_path.to_path_buf(),
@@ -97,21 +94,27 @@ impl CacheIndex {
     }
 
     /// Load all cache entries from audio files in the directory.
-    fn load_from_dir(dir: &Path) -> Vec<CacheEntry> {
-        let dir = match std::fs::read_dir(dir) {
-            Ok(d) => d,
+    async fn load_from_dir(dir: &Path) -> Vec<CacheEntry> {
+        let paths: Vec<PathBuf> = match std::fs::read_dir(dir) {
+            Ok(d) => d
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    p.extension()
+                        .and_then(|e| e.to_str())
+                        .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext))
+                })
+                .collect(),
             Err(_) => return Vec::new(),
         };
 
-        dir.flatten()
-            .map(|e| e.path())
-            .filter(|p| {
-                p.extension()
-                    .and_then(|e| e.to_str())
-                    .is_some_and(|ext| AUDIO_EXTENSIONS.contains(&ext))
-            })
-            .filter_map(|p| Self::load_entry(&p).warn().ok())
-            .collect()
+        let mut entries = Vec::new();
+        for p in paths {
+            if let Ok(entry) = Self::load_entry(&p).await.warn() {
+                entries.push(entry);
+            }
+        }
+        entries
     }
 
     /// Async watch loop: receives filesystem events, debounces, applies targeted updates.
@@ -161,10 +164,8 @@ impl CacheIndex {
                             if !is_audio {
                                 continue;
                             }
-                            if let Ok(entry) = Self::load_entry(path).warn() {
+                            if let Ok(entry) = Self::load_entry(path).await.warn() {
                                 map.insert(path.clone(), entry);
-                            } else {
-                                map.remove(path);
                             }
                         }
                     }
@@ -180,7 +181,7 @@ impl CacheIndex {
                             // On modify, failure is likely transient (e.g. file locked
                             // by ffmpeg during metadata write). Skip the update — keep
                             // the old valid entry instead of evicting it.
-                            if let Ok(entry) = Self::load_entry(path).warn() {
+                            if let Ok(entry) = Self::load_entry(path).await.warn() {
                                 map.insert(path.clone(), entry);
                             }
                         }
@@ -208,7 +209,7 @@ impl CacheIndex {
 }
 
 /// Stamp metadata into an audio file via ffmpeg. Writes to a temp file, then renames.
-pub fn write_metadata(file_path: &Path, meta: &CacheMeta) -> Result<()> {
+pub async fn write_metadata(file_path: &Path, meta: &CacheMeta) -> Result<()> {
     let json_payload = serde_json::to_string(meta)
         .map_err(|e| err!(Serialization, "failed to serialize cache metadata", @external: e))?;
     let mut temp_file_name = OsString::new();
@@ -229,6 +230,7 @@ pub fn write_metadata(file_path: &Path, meta: &CacheMeta) -> Result<()> {
         .arg("copy")
         .arg(&temp_path)
         .status()
+        .await
         .map_err(|e| err!(Internal, "failed to spawn ffmpeg for metadata write", @external: e))?;
 
     if status.success() {
@@ -249,7 +251,7 @@ pub fn write_metadata(file_path: &Path, meta: &CacheMeta) -> Result<()> {
 }
 
 /// Read metadata stamped into an audio file via ffprobe.
-fn read_metadata(file_path: &Path) -> Result<CacheMeta> {
+async fn read_metadata(file_path: &Path) -> Result<CacheMeta> {
     let output = Command::new("ffprobe")
         .arg("-v")
         .arg("quiet")
@@ -257,7 +259,8 @@ fn read_metadata(file_path: &Path) -> Result<CacheMeta> {
         .arg("json")
         .arg("-show_format")
         .arg(file_path)
-        .output()?;
+        .output()
+        .await?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);

@@ -1,7 +1,8 @@
 use crate::{Result, bail, err};
-use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Stdio;
+use tokio::io::AsyncWriteExt;
+use tokio::process::Command;
 
 /// A decoded audio segment with f32 samples.
 #[derive(Debug, Clone)]
@@ -12,10 +13,12 @@ pub struct AudioSegment {
 }
 
 /// Check that ffmpeg is available at startup.
-pub fn check_ffmpeg() -> Result<()> {
-    let output = Command::new("ffmpeg").args(["-version"]).output().map_err(
-        |e| err!(Configuration, "ffmpeg not found — install ffmpeg to use ttsfx", @external: e),
-    )?;
+pub async fn check_ffmpeg() -> Result<()> {
+    let output = Command::new("ffmpeg")
+        .args(["-version"])
+        .output()
+        .await
+        .map_err(|e| err!(Configuration, "ffmpeg not found — install ffmpeg to use ttsfx", @external: e))?;
     if !output.status.success() {
         bail!(Configuration, "ffmpeg installed but not working");
     }
@@ -23,7 +26,7 @@ pub fn check_ffmpeg() -> Result<()> {
 }
 
 /// Decode any audio format to f32 samples via ffmpeg.
-pub fn decode(bytes: &[u8], target_rate: u32) -> Result<AudioSegment> {
+pub async fn decode(bytes: &[u8], target_rate: u32) -> Result<AudioSegment> {
     let mut child = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -47,27 +50,28 @@ pub fn decode(bytes: &[u8], target_rate: u32) -> Result<AudioSegment> {
         .spawn()
         .map_err(|e| err!(Internal, "failed to spawn ffmpeg", @external: e))?;
 
-    if let Some(ref mut stdin) = child.stdin {
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(bytes)
+            .await
             .map_err(|e| err!(Internal, "failed to write to ffmpeg stdin", @external: e))?;
     }
-    drop(child.stdin.take());
 
     let output = child
         .wait_with_output()
+        .await
         .map_err(|e| err!(Internal, "ffmpeg process failed", @external: e))?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!(Io, "ffmpeg decode failed: {}", stderr);
+        bail!(AudioDecodeError, "ffmpeg decode failed: {}", stderr);
     }
 
     parse_wav_pcm(&output.stdout, target_rate)
 }
 
 /// Decode a file on disk via ffmpeg.
-pub fn decode_file(path: &Path, target_rate: u32) -> Result<AudioSegment> {
+pub async fn decode_file(path: &Path, target_rate: u32) -> Result<AudioSegment> {
     let child = Command::new("ffmpeg")
         .args([
             "-hide_banner",
@@ -97,7 +101,7 @@ pub fn decode_file(path: &Path, target_rate: u32) -> Result<AudioSegment> {
             )
         })?;
 
-    let output = child.wait_with_output().map_err(|e| {
+    let output = child.wait_with_output().await.map_err(|e| {
         err!(
             Internal,
             "ffmpeg process failed for {}",
@@ -190,17 +194,17 @@ pub fn concat_segments(mut segments: Vec<AudioSegment>) -> Result<AudioSegment, 
 }
 
 /// Encode f32 samples as MP3 via ffmpeg.
-pub fn encode_mp3(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
-    encode_ffmpeg(samples, sample_rate, "mp3", "libmp3lame", &["-q:a", "2"])
+pub async fn encode_mp3(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
+    encode_ffmpeg(samples, sample_rate, "mp3", "libmp3lame", &["-q:a", "2"]).await
 }
 
 /// Encode f32 samples as WAV via ffmpeg.
-pub fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
-    encode_ffmpeg(samples, sample_rate, "wav", "pcm_s16le", &[])
+pub async fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
+    encode_ffmpeg(samples, sample_rate, "wav", "pcm_s16le", &[]).await
 }
 
 /// Generic ffmpeg encode: pipe raw PCM in, get encoded bytes out.
-fn encode_ffmpeg(
+async fn encode_ffmpeg(
     samples: &[f32],
     sample_rate: u32,
     format: &str,
@@ -250,15 +254,16 @@ fn encode_ffmpeg(
             )
         })?;
 
-    if let Some(stdin) = &mut child.stdin {
+    if let Some(mut stdin) = child.stdin.take() {
         stdin
             .write_all(&pcm)
+            .await
             .map_err(|e| err!(Internal, "failed to write PCM to ffmpeg", @external: e))?;
     }
-    drop(child.stdin.take());
 
     let output = child
         .wait_with_output()
+        .await
         .map_err(|e| err!(Internal, "ffmpeg encode failed", @external: e))?;
 
     if !output.status.success() {
