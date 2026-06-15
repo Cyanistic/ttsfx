@@ -92,7 +92,8 @@ impl SoundResolver {
         }
 
         let base = request.pattern_config.sfx_base_url.trim_end_matches('/');
-        let url = format!("{base}/v1/sound-generation?output_format=pcm_24000");
+        let format = &request.pattern_config.sfx_output_format;
+        let url = format!("{base}/v1/sound-generation?output_format={format}");
         let resp = self
             .client
             .post(&url)

@@ -5,6 +5,8 @@
 match_mode = { mode = "Levenshtein", threshold = 1 }
 tts_base_url = "https://api.openai.com/v1"
 sfx_base_url = "https://api.elevenlabs.io"
+# ElevenLabs sound-generation output_format (mp3, wav_48000, …). Must be a container ffmpeg can read.
+sfx_output_format = "mp3"
 
 [[patterns]]
 name = "boom"

@@ -1,9 +1,9 @@
 use crate::utils::{PartialOrDefault, WarnOnError};
-use crate::{err, utils::Partial, Result};
+use crate::{Result, err, utils::Partial};
 use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, VecSkipError};
+use serde_with::{DisplayFromStr, VecSkipError, serde_as};
 use std::path::PathBuf;
 
 /// Default config template embedded from disk.
@@ -60,6 +60,9 @@ pub struct PatternConfig {
     /// ElevenLabs prompt influence (0.0-1.0, default 0.3).
     /// Lower values give the model more creative freedom; higher values stick closer to the text prompt.
     pub sfx_prompt_influence: f32,
+
+    /// SFX API `output_format` query value (e.g. `mp3`, `wav_48000`). Response must be a container ffmpeg can probe.
+    pub sfx_output_format: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,9 +89,10 @@ impl Default for PatternConfig {
             sfx_base_url: "https://api.elevenlabs.io".into(),
             sfx_api_key: String::new(),
             volume_target_db: -16.0,
-            cache_dir: PathBuf::from("sounds"),
+            cache_dir: PathBuf::from("sound_cache"),
             match_mode: MatchMode::Levenshtein(LevenshteinMode { threshold: 1 }),
             sfx_prompt_influence: 0.3,
+            sfx_output_format: "mp3".into(),
         }
     }
 }
@@ -101,11 +105,16 @@ pub struct Config {
     pub overridable: PatternConfig,
 
     /// Output sample rate (default 48000).
+    #[serde(default = "default_sample_rate")]
     pub sample_rate: u32,
 
     /// Compiled filters from defaults + user overrides.
     #[serde_as(as = "VecSkipError<_, WarnOnError>")]
     pub patterns: Vec<ConfigPatternFilter>,
+}
+
+pub fn default_sample_rate() -> u32 {
+    48_000
 }
 
 impl Config {
