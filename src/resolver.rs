@@ -88,6 +88,12 @@ impl SoundResolver {
     }
 
     /// Generate a sound effect via ElevenLabs API.
+    #[tracing::instrument(
+        level = "debug",
+        skip(self),
+        fields(text = %request.text, name = ?request.name),
+        err(level = "warn")
+    )]
     pub async fn generate(&self, request: &GenerateData) -> Result<Vec<u8>> {
         let api_key = request.pattern_config.sfx_api_key.resolve()?;
 

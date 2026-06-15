@@ -28,7 +28,8 @@ src/
 ├── config.rs       # Config loading (TOML + env vars), PatternFilter, PatternConfig
 ├── error.rs        # AppError, ErrorCode enum, err!/bail! macros, IntoResponse
 ├── utils.rs        # Partial<T>, PartialOrDefault, WarnOnError (serde_with adapters)
-├── lib.rs          # Public re-exports (Result)
+├── tracing_init.rs # `init_tracing` subscriber (EnvFilter, TTSFX_LOG)
+├── lib.rs          # Public re-exports (Result, init_tracing)
 └── main.rs         # Binary entry point, server bootstrap
 
 docs/               # Design docs (not compiled)
@@ -279,6 +280,43 @@ pub async fn handle_speech(
 // Error conversion via IntoResponse (defined in error.rs)
 impl axum::response::IntoResponse for AppError { /* ... */ }
 ```
+
+---
+
+## Tracing & Observability
+
+**Bootstrap** (`main.rs`): `dotenvy` → `color_eyre::install()` → `ttsfx::init_tracing(&[])?` → `run()`.
+
+**HTTP middleware** (`middleware.rs`): outer `request_id_middleware` (`x-request-id` in/out, `RequestId` in extensions) → `TraceLayer` with `RequestSpan` (`info_span!("request", id, method, path, ip, otel.name)`) and `StatusLevelOnResponse` (5xx → `error!`, 4xx → `warn!`, else `debug!` with `status`, `latency_ms`). Successful `/v1/audio/speech` work still logs at **info** inside `handle_speech`; access-line style completion is **debug** for 2xx so `TTSFX_LOG=info` stays readable.
+
+**Env vars**:
+- `TTSFX_LOG` — default `debug` for the `ttsfx` crate
+- `RUST_LOG` — extra `tracing_subscriber` directives (merged with defaults)
+- `TTSFX_LOG_TREE` — default **true**: **`SpanTreeFormat`** (message + fields first, then dimmed span chain like `request{id=… method=POST path=/v1/audio/speech}`)
+- `TTSFX_LOG_TREE=0` — stock subscriber with file/line; `TTSFX_LOG_FILE=0` hides file/line in that mode
+
+Default filter: **WARN** globally, then `ttsfx={TTSFX_LOG}`, then quiet deps (`hyper`, `tower`, `h2`, `reqwest`, `notify`).
+
+**Levels**:
+- `info!` — lifecycle (server up, config loaded, cache hit/miss summary, response ready)
+- `debug!` — investigation (fragment split, upstream TTS, ffmpeg, cache index refresh)
+- `trace!` — mechanical replay (rare here)
+- `warn!` — expected degradation (bad regex at match time, override merge failed, watcher errors)
+- `error!` — system problems (via `ResultExt::error()` or explicit `error!`)
+
+**Structured fields**: use `key = value`, `%display`, `?debug` on events — not string interpolation in the message.
+
+```rust
+info!(path = %entry.filepath.display(), "cache hit");
+warn!(pattern = %name, "regex error during matching");
+```
+
+**Instrumentation**: no proc-macro `#[traced]` in this crate — use `#[tracing::instrument]` directly:
+- HTTP entry / user-visible work: `level = "info"`, `err(level = "warn")`, `skip` large args (`State`, headers, body)
+- Internal async helpers: `level = "debug"`, same `err` default
+- Put request identity on the span: `fields(model = %body.settings.model, input_len = body.input.len())`
+
+**Errors**: `.warn()` / `.error()` from `ResultExt` in `error.rs` logs with `caller.file` / `caller.line`.
 
 ---
 

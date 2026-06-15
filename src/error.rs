@@ -1,5 +1,5 @@
 use crate::err;
-use axum::{Json, http::StatusCode};
+use axum::{http::StatusCode, Json};
 use serde::Serialize;
 use serde_with::skip_serializing_none;
 use std::borrow::Cow;
@@ -50,7 +50,7 @@ pub struct ExternalError {
 }
 
 // ============================================================================
-// AppError Construction & Accessors
+// AppError construction & accessors
 // ============================================================================
 
 impl fmt::Display for AppError {
@@ -178,7 +178,7 @@ impl From<reqwest::Error> for AppError {
 }
 
 // ============================================================================
-// Convenience Macros
+// Convenience macros
 // ============================================================================
 
 #[macro_export]

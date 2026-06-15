@@ -18,6 +18,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::join_all;
+use tracing::{debug, info};
 
 use serde::{Deserialize, Serialize};
 
@@ -56,6 +57,17 @@ pub struct ProxyRequest {
     pub response_format: SpeechResponseFormat,
 }
 
+#[tracing::instrument(
+    level = "info",
+    skip(state, headers, body),
+    fields(
+        model = %body.settings.model,
+        voice = %body.settings.voice,
+        response_format = ?body.response_format,
+        input_len = body.input.len(),
+    ),
+    err(level = "warn")
+)]
 pub async fn handle_speech(
     State(state): State<AppState>,
     mut headers: HeaderMap,
@@ -73,6 +85,7 @@ pub async fn handle_speech(
         Validation,
         "no audio fragments to synthesize"
     );
+    debug!(sfx_matches = matches.len(), fragments = fragments.len(), "speech request split");
 
     let sample_rate = state.config.sample_rate;
     let settings = body.settings.clone();
@@ -134,6 +147,12 @@ pub async fn handle_speech(
         SpeechResponseFormat::Mp3 => audio::encode_mp3(&merged.samples, merged.sample_rate).await?,
         SpeechResponseFormat::Wav => audio::encode_wav(&merged.samples, merged.sample_rate).await?,
     };
+
+    info!(
+        bytes = bytes.len(),
+        duration_ms = (merged.samples.len() as u64 * 1000 / merged.sample_rate as u64),
+        "speech response ready"
+    );
 
     Ok((
         StatusCode::OK,
@@ -230,6 +249,12 @@ async fn resolve_fragment(
     }
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(state, settings, forward_headers),
+    fields(input_len = input.len(), model = %settings.model, voice = %settings.voice),
+    err(level = "warn")
+)]
 async fn forward_tts(
     state: &AppState,
     settings: &TtsSettings,
@@ -262,6 +287,12 @@ async fn forward_tts(
         .map_err(|e| err!(Network, "failed to read TTS body", @source: e))
 }
 
+#[tracing::instrument(
+    level = "debug",
+    skip(state),
+    fields(text = %generate_data.text, name = ?generate_data.name),
+    err(level = "warn")
+)]
 async fn generate_and_cache(
     state: &AppState,
     generate_data: &GenerateData,
@@ -280,6 +311,7 @@ async fn generate_and_cache(
         version: String::new(),
     };
     write_metadata(&filepath, &meta).await?;
+    info!(path = %filepath.display(), bytes = audio_bytes.len(), "sfx cached");
     Ok((audio_bytes, filepath))
 }
 

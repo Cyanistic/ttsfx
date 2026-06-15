@@ -1,5 +1,6 @@
 use crate::{Result, bail, err};
 use std::path::Path;
+use tracing::debug;
 use std::process::Stdio;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
@@ -13,6 +14,7 @@ pub struct AudioSegment {
 }
 
 /// Check that ffmpeg is available at startup.
+#[tracing::instrument(level = "debug", err(level = "warn"))]
 pub async fn check_ffmpeg() -> Result<()> {
     let output = Command::new("ffmpeg")
         .args(["-version"])
@@ -22,6 +24,7 @@ pub async fn check_ffmpeg() -> Result<()> {
     if !output.status.success() {
         bail!(Configuration, "ffmpeg installed but not working");
     }
+    debug!("ffmpeg available");
     Ok(())
 }
 
@@ -121,7 +124,7 @@ pub async fn decode_file(path: &Path, target_rate: u32) -> Result<AudioSegment> 
 
 /// Parse raw little-endian s16le mono PCM from ffmpeg `-f s16le` output.
 fn parse_pcm_s16le(pcm_bytes: &[u8], sample_rate: u32) -> Result<AudioSegment> {
-    if pcm_bytes.len() % 2 != 0 {
+    if !pcm_bytes.len().is_multiple_of(2) {
         bail!(
             AudioDecodeError,
             "ffmpeg PCM length is not aligned to 16-bit samples ({} bytes)",
