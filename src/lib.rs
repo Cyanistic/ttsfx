@@ -6,6 +6,7 @@ pub mod config;
 pub mod error;
 pub mod pattern;
 pub mod resolver;
+pub mod state;
 pub mod utils;
 
 pub use config::volume_gain;
