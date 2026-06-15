@@ -3,6 +3,8 @@
 
 [overridable]
 match_mode = { mode = "Levenshtein", threshold = 1 }
+tts_base_url = "https://api.openai.com/v1"
+sfx_base_url = "https://api.elevenlabs.io"
 
 [[patterns]]
 name = "boom"

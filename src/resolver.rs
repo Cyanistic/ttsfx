@@ -91,10 +91,8 @@ impl SoundResolver {
             bail!(Configuration, "sfx_api_key is not configured");
         }
 
-        let url = format!(
-            "{}/v1/sound-generation?output_format=pcm_24000",
-            request.pattern_config.tts_base_url
-        );
+        let base = request.pattern_config.sfx_base_url.trim_end_matches('/');
+        let url = format!("{base}/v1/sound-generation?output_format=pcm_24000");
         let resp = self
             .client
             .post(&url)

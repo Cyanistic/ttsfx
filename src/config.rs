@@ -43,6 +43,9 @@ pub struct PatternConfig {
     /// TTS backend URL (e.g. "https://api.openai.com/v1").
     pub tts_base_url: String,
 
+    /// ElevenLabs SFX API base URL (e.g. "https://api.elevenlabs.io").
+    pub sfx_base_url: String,
+
     /// ElevenLabs API key (from env var or config file).
     pub sfx_api_key: String,
 
@@ -80,6 +83,7 @@ impl Default for PatternConfig {
     fn default() -> Self {
         Self {
             tts_base_url: "https://api.openai.com/v1".into(),
+            sfx_base_url: "https://api.elevenlabs.io".into(),
             sfx_api_key: String::new(),
             volume_target_db: -16.0,
             cache_dir: PathBuf::from("sounds"),
