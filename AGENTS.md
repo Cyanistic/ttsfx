@@ -30,6 +30,7 @@ src/
 ├── utils.rs        # Partial<T>, PartialOrDefault, WarnOnError (serde_with adapters)
 ├── tracing_init.rs # `init_tracing` subscriber (EnvFilter, TTSFX_LOG)
 ├── lib.rs          # Public re-exports (Result, init_tracing)
+├── cli.rs          # clap: `--listen` / `TTSFX_LISTEN` only
 └── main.rs         # Binary entry point, server bootstrap
 
 docs/               # Design docs (not compiled)
@@ -47,6 +48,8 @@ sounds/             # Audio cache directory (sidecar .json metadata)
 cargo check         # Check all Rust code (REQUIRED before committing)
 cargo test          # Run all tests
 ```
+
+**Local server:** If port 3000 (or your `--listen`) is already in use, the user often has `ttsfx` running in their own terminal to watch logs. **Do not kill that process** — use `curl` / `scripts/test_speech_samples.sh` against the existing instance, or ask them to restart after code changes.
 
 ---
 
@@ -285,7 +288,11 @@ impl axum::response::IntoResponse for AppError { /* ... */ }
 
 ## Tracing & Observability
 
-**Bootstrap** (`main.rs`): `dotenvy` → `color_eyre::install()` → `ttsfx::init_tracing(&[])?` → `run()`.
+**Bootstrap** (`main.rs`): `dotenvy` → `color_eyre::install()` → `init_tracing` → `cli::Cli::parse_args()` → `run(listen)`.
+
+**CLI** (`cli.rs`): listen address only — `-L` / `--listen` (default `0.0.0.0:3000`, env `TTSFX_LISTEN`). Domain config stays in `config.toml` / `TTSFX_*`.
+
+**Upstream TTS** (Kokoro/OpenAI-shaped): client JSON may include `speed` and `normalization_options` on the same body as `model`/`voice`; fragment sub-requests forward them with `stream: false` and `response_format: "wav"`.
 
 **HTTP middleware** (`middleware.rs`): outer `request_id_middleware` (`x-request-id` in/out, `RequestId` in extensions) → `TraceLayer` with `RequestSpan` (`info_span!("request", id, method, path, ip, otel.name)`) and `StatusLevelOnResponse` (5xx → `error!`, 4xx → `warn!`, else `debug!` with `status`, `latency_ms`). Successful `/v1/audio/speech` work still logs at **info** inside `handle_speech`; access-line style completion is **debug** for 2xx so `TTSFX_LOG=info` stays readable.
 

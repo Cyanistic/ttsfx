@@ -2,6 +2,7 @@
 
 pub mod audio;
 pub mod cache;
+pub mod cli;
 pub mod config;
 pub mod error;
 pub mod handler;
@@ -14,6 +15,7 @@ pub mod state;
 pub mod tracing_init;
 pub mod utils;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use axum::middleware::from_fn;
@@ -29,7 +31,7 @@ pub use error::Result;
 pub use tracing_init::init_tracing;
 
 /// Load config, build the router, and serve until shutdown.
-pub async fn run() -> Result<()> {
+pub async fn run(listen: SocketAddr) -> Result<()> {
     audio::check_ffmpeg().await?;
 
     let config = Arc::new(config::Config::load()?);
@@ -66,7 +68,7 @@ pub async fn run() -> Result<()> {
         .layer(from_fn(middleware::request_id_middleware))
         .with_state(state);
 
-    let listener = TcpListener::bind("0.0.0.0:3000").await?;
+    let listener = TcpListener::bind(listen).await?;
     info!(addr = %listener.local_addr()?, "listening");
     axum::serve(listener, app).await?;
 

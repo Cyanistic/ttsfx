@@ -2,8 +2,8 @@ use std::path::PathBuf;
 use std::sync::Arc;
 
 use crate::audio::{self, AudioSegment};
-use crate::config::volume_gain;
 use crate::cache::{CacheMeta, write_metadata};
+use crate::config::volume_gain;
 
 use crate::pattern::{PatternMatch, match_patterns};
 use crate::resolver::{GenerateData, Resolution};
@@ -18,6 +18,7 @@ use axum::http::header::{
 use axum::http::{HeaderMap, HeaderName, StatusCode};
 use axum::response::{IntoResponse, Response};
 use futures_util::future::join_all;
+use serde_with::skip_serializing_none;
 use tracing::{debug, info};
 
 use serde::{Deserialize, Serialize};
@@ -41,11 +42,27 @@ impl SpeechResponseFormat {
     }
 }
 
+/// Kokoro / OpenAI-compatible text normalization (passthrough to upstream TTS).
+#[skip_serializing_none]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct NormalizationOptions {
+    pub normalize: Option<bool>,
+    pub unit_normalization: Option<bool>,
+    pub url_normalization: Option<bool>,
+    pub email_normalization: Option<bool>,
+    pub optional_pluralization_normalization: Option<bool>,
+    pub phone_normalization: Option<bool>,
+}
+
 /// Upstream TTS parameters shared across every text chunk in one client request.
+#[skip_serializing_none]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TtsSettings {
     pub model: String,
     pub voice: String,
+    /// Speaking rate (Kokoro: 0.25–4.0). Omitted on upstream calls when unset.
+    pub speed: Option<f32>,
+    pub normalization_options: Option<NormalizationOptions>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -55,6 +72,19 @@ pub struct ProxyRequest {
     pub input: String,
     #[serde(default)]
     pub response_format: SpeechResponseFormat,
+}
+
+/// Body for upstream `/audio/speech` fragment calls (WAV in, non-streaming).
+#[skip_serializing_none]
+#[derive(Debug, Serialize)]
+struct UpstreamSpeechBody<'a> {
+    model: &'a str,
+    voice: &'a str,
+    input: &'a str,
+    response_format: &'static str,
+    stream: bool,
+    speed: Option<f32>,
+    normalization_options: Option<NormalizationOptions>,
 }
 
 #[tracing::instrument(
@@ -85,7 +115,11 @@ pub async fn handle_speech(
         Validation,
         "no audio fragments to synthesize"
     );
-    debug!(sfx_matches = matches.len(), fragments = fragments.len(), "speech request split");
+    debug!(
+        sfx_matches = matches.len(),
+        fragments = fragments.len(),
+        "speech request split"
+    );
 
     let sample_rate = state.config.sample_rate;
     let settings = body.settings.clone();
@@ -266,10 +300,14 @@ async fn forward_tts(
         state.config.overridable.tts_base_url.trim_end_matches('/')
     );
     let client = reqwest::Client::new();
-    let body = ProxyRequest {
-        settings: settings.clone(),
-        input: input.to_string(),
-        response_format: SpeechResponseFormat::Wav,
+    let body = UpstreamSpeechBody {
+        model: &settings.model,
+        voice: &settings.voice,
+        input,
+        response_format: "wav",
+        stream: false,
+        speed: settings.speed,
+        normalization_options: settings.normalization_options.clone(),
     };
     let mut req = client.post(&url).json(&body);
     for (name, value) in forward_headers.iter() {

@@ -4,3 +4,4 @@
 .env
 *.wav
 *.mp3
+/test_samples/

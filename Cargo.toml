@@ -35,7 +35,8 @@ rayon = "1.12.0"
 blake3 = "1.8.5"
 axum-reverse-proxy = "1.3.0"
 dotenvy = "0.15.7"
+clap = { version = "4", features = ["derive", "env"] }
 http = "1"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["trace"] }
-uuid = { version = "1", features = ["v4"] }
+uuid = { version = "1", features = ["v7"] }
