@@ -133,7 +133,7 @@ impl SoundResolver {
                 name: cpf.filter.name.clone(),
                 text: matched_text.to_owned(),
                 recipe,
-                cache_tag: cpf.filter.cache_tag.clone(),
+                cache_tag: cpf.filter.effective_cache_tag(),
                 pattern_config,
                 query_embedding,
             }

@@ -66,7 +66,7 @@ pub async fn reindex_embeddings(config: &Config, args: &ReindexEmbeddingsArgs) -
         candidates,
         updated,
         dry_run = args.dry_run,
-        "reindex-embeddings finished"
+        "reindex finished"
     );
     Ok(())
 }

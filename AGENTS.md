@@ -30,7 +30,7 @@ src/
 ├── utils.rs        # Partial<T>, PartialOrDefault, WarnOnError (serde_with adapters)
 ├── tracing_init.rs # `init_tracing` subscriber (EnvFilter, TTSFX_LOG)
 ├── lib.rs          # Public re-exports (Result, init_tracing)
-├── cli.rs          # clap: `--listen` / `TTSFX_LISTEN` only
+├── cli.rs          # clap: `run` (default), `reindex`, `--listen`, `--config`
 └── main.rs         # Binary entry point, server bootstrap
 
 docs/               # Design docs (not compiled)
@@ -49,7 +49,7 @@ cargo check         # Check all Rust code (REQUIRED before committing)
 cargo test          # Run all tests
 ```
 
-**Local server:** If port 3000 (or your `--listen`) is already in use, the user often has `ttsfx` running in their own terminal to watch logs. **Do not kill that process** — use `curl` / `scripts/test_speech_samples.sh` against the existing instance, or ask them to restart after code changes.
+**Local server:** If port 8787 (or your `--listen`) is already in use, the user often has `ttsfx` running in their own terminal to watch logs. **Do not kill that process** — use `curl` / `scripts/test_speech_samples.sh` against the existing instance, or ask them to restart after code changes.
 
 ---
 
@@ -290,7 +290,7 @@ impl axum::response::IntoResponse for AppError { /* ... */ }
 
 **Bootstrap** (`main.rs`): `dotenvy` → `color_eyre::install()` → `init_tracing` → `cli::Cli::parse_args()` → `run(listen)`.
 
-**CLI** (`cli.rs`): listen address only — `-L` / `--listen` (default `0.0.0.0:3000`, env `TTSFX_LISTEN`). Domain config stays in `config.toml` / `TTSFX_*`.
+**CLI** (`cli.rs`): default subcommand runs the server — `-L` / `--listen` (`TTSFX_LISTEN`), `--config` (`TTSFX_CONFIG`). `reindex` refreshes cache embeddings. Domain settings stay in `config.toml` / `TTSFX_OVERRIDABLE__*`. User-facing overview: `README.md`.
 
 **Upstream TTS** (Kokoro/OpenAI-shaped): client JSON may include `speed` and `normalization_options` on the same body as `model`/`voice`; fragment sub-requests forward them with `stream: false` and `response_format: "wav"`.
 

@@ -91,7 +91,7 @@ Everything is in **`config.toml`** at the repo root (or pass `--config`). The fi
 | Cache on disk | `cache_dir` (optional) | Audio + `.json` metadata; default `sound_cache/` if omitted |
 | Cache lookup | `match_mode` | `levenshtein` (simple) or `embeddings` (needs `embed_*` + optional `ttsfx reindex`) |
 | Recipes | `context`, `sfx_prompt_template` | Minijinja prompt for generate + embed; see comments in TOML |
-| Patterns | `[[patterns]]` | `regex`, `priority` (higher first), optional `cache_tag`, `[patterns.overrides]` |
+| Patterns | `[[patterns]]` | `regex`, `priority` (higher first), optional `cache_tag` (defaults to regex string), `[patterns.overrides]` |
 
 <details>
 <summary>Minimal example (Levenshtein, one pattern)</summary>

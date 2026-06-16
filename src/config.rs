@@ -1,9 +1,10 @@
 use crate::utils::{PartialOrDefault, WarnOnError};
-use crate::{err, utils::Partial, Result};
+use crate::{Result, err, utils::Partial};
 use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_with::{serde_as, DisplayFromStr, VecSkipError};
+use serde_with::{DisplayFromStr, VecSkipError, serde_as, skip_serializing_none};
+use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
 /// Default config template embedded from disk.
@@ -43,6 +44,7 @@ pub fn default_cache_tag() -> String {
 }
 
 /// A compiled pattern filter rule for detecting onomatopoeia in text.
+#[skip_serializing_none]
 #[serde_as]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PatternFilter {
@@ -51,15 +53,23 @@ pub struct PatternFilter {
     /// Higher = checked first (descending sort at startup).
     #[serde(default)]
     pub priority: u32,
-    /// Cache lookup scope; entries only match within the same tag.
-    #[serde(default = "default_cache_tag")]
-    pub cache_tag: String,
+    /// Cache lookup scope; entries only match within the same tag. When unset, the regex pattern string is used.
+    pub cache_tag: Option<String>,
     /// Cosmetic labels for recipe templates only; pattern-level only (not in `[overridable]` or `overrides`).
     #[serde(default)]
     pub tags: Vec<String>,
     /// Compiled fancy-regex pattern (e.g. r"\bboom\b").
     #[serde_as(as = "DisplayFromStr")]
     pub regex: Regex,
+}
+
+impl PatternFilter {
+    /// Resolved cache scope: explicit `cache_tag` or the pattern's regex source string.
+    pub fn effective_cache_tag(&self) -> String {
+        self.cache_tag
+            .clone()
+            .unwrap_or_else(|| self.regex.to_string())
+    }
 }
 
 /// A compiled pattern filter rule for detecting onomatopoeia in text.
@@ -73,7 +83,6 @@ pub struct ConfigPatternFilter {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct PatternConfig {
     /// TTS backend URL (e.g. "https://api.openai.com/v1").
     pub tts_base_url: String,
@@ -247,8 +256,7 @@ impl Config {
                 "embed_base_url is required when match_mode is Embeddings"
             ));
         }
-        raw.patterns
-            .sort_by(|a, b| b.filter.priority.cmp(&a.filter.priority));
+        raw.patterns.sort_by_key(|a| Reverse(a.filter.priority));
         Ok(raw)
     }
 }

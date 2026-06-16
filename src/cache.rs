@@ -152,12 +152,12 @@ impl CacheIndex {
         threshold: usize,
         text: &str,
     ) -> Option<CacheEntry> {
-        let tag = &filter.cache_tag;
+        let tag = filter.effective_cache_tag();
         let needle = normalize_match_text(text);
         let entries = self.rx.borrow();
         entries
             .iter()
-            .filter(|e| e.meta.cache_tag == *tag)
+            .filter(|e| e.meta.cache_tag == tag)
             .map(|e| {
                 let dist =
                     strsim::levenshtein(&needle, &normalize_match_text(&e.meta.matched_text));
@@ -174,11 +174,11 @@ impl CacheIndex {
         threshold: f32,
         query: &[f32],
     ) -> Option<CacheEntry> {
-        let tag = &filter.cache_tag;
+        let tag = filter.effective_cache_tag();
         let entries = self.rx.borrow();
         entries
             .iter()
-            .filter(|e| e.meta.cache_tag == *tag)
+            .filter(|e| e.meta.cache_tag == tag)
             .filter_map(|e| {
                 let emb = e.meta.embedding.as_ref()?;
                 let score = crate::embed::cosine_similarity(query, emb.as_slice());

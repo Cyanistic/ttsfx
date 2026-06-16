@@ -53,7 +53,7 @@ sfx_prompt_template = "\"{{ text }}\"{% if context %} — {{ context }}{% endif 
 name = "boom"
 priority = 100
 regex = "\\b(?:BOOM|Boom)\\b"
-# cache_tag = "impact"   # cache lookup scope (default: default); entries only match within the same tag
+# cache_tag = "impact"   # optional; omit to use this pattern's regex string as the cache scope
 # tags = ["loud"]        # cosmetic labels for the recipe template only
 # [patterns.overrides]
 # crossfade_ms = 20

@@ -3,7 +3,7 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$ROOT/test_samples"
-BASE="${TTSFX_URL:-http://127.0.0.1:3000}"
+BASE="${TTSFX_URL:-http://127.0.0.1:8787}"
 mkdir -p "$OUT"
 
 post() {

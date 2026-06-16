@@ -67,7 +67,7 @@ mod tests {
         PatternFilter {
             name: Some(name.into()),
             priority: 0,
-            cache_tag: "default".into(),
+            cache_tag: None,
             tags: vec![],
             regex: Regex::new(pat).unwrap(),
         }
