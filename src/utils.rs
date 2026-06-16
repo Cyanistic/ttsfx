@@ -1,13 +1,13 @@
-use std::collections::HashMap;
 use std::fmt::Debug;
 use std::marker::PhantomData;
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_with::{DeserializeAs, InspectError};
 use tracing::warn;
 
-use crate::{err, Result};
+use crate::{Result, err};
 
 /// A partial representation of `T` where only some fields may be present.
 ///
@@ -16,7 +16,7 @@ use crate::{err, Result};
 #[derive(Serialize, Deserialize)]
 #[serde(transparent)]
 pub struct Partial<T> {
-    fields: HashMap<String, serde_json::Value>,
+    fields: Value,
     #[serde(skip)]
     _phantom: PhantomData<T>,
 }
@@ -42,7 +42,7 @@ impl<T> Clone for Partial<T> {
 impl<T> Partial<T> {
     pub fn new() -> Self {
         Self {
-            fields: HashMap::new(),
+            fields: Value::Object(Default::default()),
             _phantom: PhantomData,
         }
     }
@@ -54,24 +54,48 @@ impl<T> Default for Partial<T> {
     }
 }
 
+/// Deep-merge `overlay` into `base` when both sides are JSON objects; otherwise replace `base`.
+fn merge_into(base: &mut Value, overlay: Value) {
+    match (base, overlay) {
+        (Value::Object(base_map), Value::Object(overlay_map)) => {
+            for (k, overlay_v) in overlay_map {
+                match base_map.get_mut(&k) {
+                    Some(base_v) => merge_into(base_v, overlay_v),
+                    None => {
+                        base_map.insert(k, overlay_v);
+                    }
+                }
+            }
+        }
+        (base_slot, overlay_v) => *base_slot = overlay_v,
+    }
+}
+
 impl<T: Serialize + DeserializeOwned> Partial<T> {
     /// Merge this partial into `target`, returning a new `T`.
     ///
     /// - Missing fields (not in map) → keep target's value
-    /// - Present fields (including null) → override target's value
+    /// - Present fields → merge: nested objects recurse; scalars and arrays replace
     /// - Returns error if deserialization fails (e.g. null into non-nullable type)
     pub fn apply_some(&self, target: &T) -> Result<T> {
         let type_name = std::any::type_name::<T>();
-        let mut map = serde_json::to_value(target)
-            .map_err(|e| err!(Serialization, "failed to serialize {} for partial merge", type_name, @external: e))?
-            .as_object()
-            .cloned()
-            .ok_or_else(|| err!(Serialization, "expected object when serializing {}", type_name))?;
-        for (key, value) in &self.fields {
-            map.insert(key.clone(), value.clone());
-        }
-        serde_json::from_value(serde_json::Value::Object(map))
-            .map_err(|e| err!(Validation, "failed to deserialize {} after partial merge", type_name, @external: e))
+        let mut root = serde_json::to_value(target).map_err(|e| {
+            err!(
+                Serialization,
+                "failed to serialize {} for partial merge",
+                type_name,
+                @external: e
+            )
+        })?;
+        merge_into(&mut root, self.fields.clone());
+        serde_json::from_value(root).map_err(|e| {
+            err!(
+                Validation,
+                "failed to deserialize {} after partial merge",
+                type_name,
+                @external: e
+            )
+        })
     }
 }
 

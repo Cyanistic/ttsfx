@@ -14,9 +14,9 @@ sfx_output_format = "mp3_44100_128"
 # SFX level after RMS match to speech: 0 = same loudness, negative = quieter (default in code is -16 if unset)
 volume_target_db = 0
 # crossfade_ms = 12   # default at SFX joins; 0 = hard join
-context = { mode = "sentence" }
-# Recipe → ElevenLabs + embeddings. Vars: text, before, after, sentence, name, tags
-sfx_prompt_template = "\"{{ text }}\"{% if sentence %} — {{ sentence }}{% endif %}. Invent a creative sound for this moment. Keep it short and tight: end when the effect ends, no long reverb, no trailing silence."
+context = { mode = "sentences", before = 1, after = 1 }
+# Recipe → ElevenLabs + embeddings. Vars: text, context, name, tags
+sfx_prompt_template = "\"{{ text }}\"{% if context %} — {{ context }}{% endif %}. Invent a creative sound for this moment. Keep it short and tight: end when the effect ends, no long reverb, no trailing silence."
 # sfx_duration_seconds = 2.0   # omit to let ElevenLabs choose length from the prompt
 # match_mode threshold: lower levenshtein / higher embedding cosine = stricter cache (more regen)
 # match_mode = { mode = "levenshtein", threshold = 1 }

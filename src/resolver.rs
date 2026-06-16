@@ -81,7 +81,7 @@ impl SoundResolver {
         let recipe = render_recipe(
             pattern_config.sfx_prompt_template.as_deref(),
             &RecipeContext {
-                context_mode: &pattern_config.context,
+                context_mode: pattern_config.context.as_ref(),
                 full_input,
                 start: m.start,
                 end: m.end,

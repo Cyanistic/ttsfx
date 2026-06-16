@@ -1,9 +1,9 @@
 use crate::utils::{PartialOrDefault, WarnOnError};
-use crate::{Result, err, utils::Partial};
+use crate::{err, utils::Partial, Result};
 use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_with::{DisplayFromStr, VecSkipError, serde_as};
+use serde_with::{serde_as, DisplayFromStr, VecSkipError};
 use std::path::{Path, PathBuf};
 
 /// Default config template embedded from disk.
@@ -104,8 +104,7 @@ pub struct PatternConfig {
     pub crossfade_ms: u32,
 
     /// How to slice surrounding text for recipe templates.
-    #[serde(default)]
-    pub context: ContextExtraction,
+    pub context: Option<ContextExtraction>,
 
     /// Minijinja template for ElevenLabs + embeddings; default `{{ text }}` when unset.
     pub sfx_prompt_template: Option<String>,
@@ -136,16 +135,18 @@ fn default_embed_api_key() -> SecretSource {
     SecretSource::Literal(String::new())
 }
 
+/// How many units (chars or sentences) to include on each side of the match.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ContextWindow {
+    pub before: usize,
+    pub after: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "mode", rename_all = "snake_case")]
 pub enum ContextExtraction {
-    #[default]
-    None,
-    Chars {
-        before: usize,
-        after: usize,
-    },
-    Sentence,
+    Chars(ContextWindow),
+    Sentences(ContextWindow),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,7 +178,7 @@ impl Default for PatternConfig {
             sfx_prompt_influence: 0.8,
             sfx_output_format: "mp3_44100_128".into(),
             crossfade_ms: default_crossfade_ms(),
-            context: ContextExtraction::default(),
+            context: None,
             sfx_prompt_template: None,
             sfx_duration_seconds: None,
             embed_base_url: String::new(),

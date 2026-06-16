@@ -1,4 +1,4 @@
-use crate::cache::{audio_paths_in_dir, CacheIndex, write_metadata};
+use crate::cache::{CacheIndex, Embeddings, audio_paths_in_dir, write_metadata};
 use crate::cli::ReindexEmbeddingsArgs;
 use crate::config::Config;
 use crate::embed::embed_text;
@@ -56,7 +56,7 @@ pub async fn reindex_embeddings(config: &Config, args: &ReindexEmbeddingsArgs) -
         let mut meta = entry.meta;
         meta.embed_model = Some(config.overridable.embed_model.clone());
         meta.embedded_at = Some(Utc::now());
-        meta.embedding = Some(crate::cache::Embeddings::from(vector));
+        meta.embedding = Some(Embeddings::from(vector));
         write_metadata(&path, &meta).await?;
         updated += 1;
         info!(path = %path.display(), "reindexed embedding");
