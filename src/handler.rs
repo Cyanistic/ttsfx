@@ -109,7 +109,8 @@ pub async fn handle_speech(
 ) -> Result<Response> {
     ensure!(!body.input.is_empty(), Validation, "input text is empty");
 
-    let patterns: Vec<_> = state.config.patterns.iter().map(|p| &p.filter).collect();
+    let config = state.config.snapshot();
+    let patterns: Vec<_> = config.patterns.iter().map(|p| &p.filter).collect();
     let mut matches = match_patterns(patterns.into_iter(), &body.input);
     matches.sort_by_key(|m| m.start);
 
@@ -132,7 +133,7 @@ pub async fn handle_speech(
         );
     }
 
-    let sample_rate = state.config.sample_rate;
+    let sample_rate = config.sample_rate;
     let settings = body.settings.clone();
     forward_client_headers(&mut headers);
     let forward_headers = Arc::new(headers);
@@ -286,16 +287,17 @@ async fn resolve_fragment(
     forward_headers: &HeaderMap,
     full_input: &str,
 ) -> Result<FragmentOutcome> {
+    let config = state.config.snapshot();
     let kind = FragmentKind::from(&frag);
     match frag {
         Fragment::Tts { text } => {
             info!(kind = "tts", chars = text.len(), "resolving fragment");
-            let bytes = forward_tts(state, settings, &text, forward_headers).await?;
+            let bytes = forward_tts(state, &config, settings, &text, forward_headers).await?;
             info!(kind = "tts", bytes = bytes.len(), "fragment ready");
             Ok(FragmentOutcome {
                 kind,
                 audio: ResolvedAudio::Bytes(bytes),
-                volume_db: state.config.overridable.volume_target_db,
+                volume_db: config.overridable.volume_target_db,
                 crossfade_ms: 0,
             })
         }
@@ -322,7 +324,7 @@ async fn resolve_fragment(
                     })
                 }
                 Resolution::Generate(generate_data) => {
-                    let (bytes, _path) = generate_and_cache(state, &generate_data).await?;
+                    let (bytes, _path) = generate_and_cache(state, &config, &generate_data).await?;
                     info!(kind = "sfx", bytes = bytes.len(), "fragment ready (generated)");
                     Ok(FragmentOutcome {
                         kind,
@@ -344,13 +346,14 @@ async fn resolve_fragment(
 )]
 async fn forward_tts(
     state: &AppState,
+    config: &crate::config::Config,
     settings: &TtsSettings,
     input: &str,
     forward_headers: &HeaderMap,
 ) -> Result<Vec<u8>> {
     let url = format!(
         "{}/audio/speech",
-        state.config.overridable.tts_base_url.trim_end_matches('/')
+        config.overridable.tts_base_url.trim_end_matches('/')
     );
     let body = UpstreamSpeechBody {
         model: &settings.model,
@@ -385,13 +388,14 @@ async fn forward_tts(
 )]
 async fn generate_and_cache(
     state: &AppState,
+    config: &crate::config::Config,
     generate_data: &GenerateData,
 ) -> Result<(Vec<u8>, PathBuf)> {
     let audio_bytes = state.resolver.generate(generate_data).await?;
     let ext = sfx_cache_extension(&generate_data.pattern_config.sfx_output_format);
     let hash = blake3::hash(&audio_bytes).to_hex().to_string();
     let filename = format!("{hash}.{ext}");
-    let filepath = state.config.overridable.cache_dir.join(&filename);
+    let filepath = config.overridable.cache_dir.join(&filename);
     tokio::fs::write(&filepath, &audio_bytes)
         .await
         .map_err(|e| err!(Io, "failed to write cache file: {}", filepath.display(), @source: e))?;

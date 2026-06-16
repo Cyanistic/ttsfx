@@ -4,7 +4,9 @@ pub mod audio;
 pub mod cache;
 pub mod cli;
 pub mod config;
+pub mod config_handle;
 pub mod embed;
+pub mod fs_watch;
 pub mod error;
 pub mod handler;
 pub mod log_fmt;
@@ -37,15 +39,17 @@ pub use tracing_init::init_tracing;
 pub async fn run(listen: SocketAddr, config_path: &std::path::Path) -> Result<()> {
     audio::check_ffmpeg().await?;
 
-    let config = Arc::new(config::Config::load_from_path(config_path)?);
-    info!(patterns = config.patterns.len(), "config loaded");
+    let config =
+        config_handle::ConfigHandle::load_and_watch(config_path.to_path_buf()).await?;
+    let snap = config.snapshot();
+    info!(patterns = snap.patterns.len(), "config loaded");
 
-    let cache = cache::CacheIndex::new(config.overridable.cache_dir.clone()).await;
+    let cache = cache::CacheIndex::new(snap.overridable.cache_dir.clone()).await;
     let resolver = Arc::new(resolver::SoundResolver::new(config.clone(), cache.clone()));
 
-    let state = state::AppState::new(config.clone(), cache, resolver);
+    let state = state::AppState::new(config, cache, resolver);
 
-    let upstream = config
+    let upstream = snap
         .overridable
         .tts_base_url
         .trim_end_matches('/')

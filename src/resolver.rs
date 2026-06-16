@@ -1,12 +1,12 @@
 use crate::cache::CacheIndex;
-use crate::config::{Config, MatchMode, PatternConfig};
+use crate::config::{MatchMode, PatternConfig};
+use crate::config_handle::ConfigHandle;
 use crate::embed::embed_text;
 use crate::pattern::PatternMatch;
 use crate::recipe::{RecipeContext, render_recipe};
 use crate::{Result, err};
 use reqwest::Client;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Duration;
 use tracing::{info, warn};
 
@@ -42,11 +42,11 @@ pub struct GenerateData {
 pub struct SoundResolver {
     cache: CacheIndex,
     client: Client,
-    config: Arc<Config>,
+    config: ConfigHandle,
 }
 
 impl SoundResolver {
-    pub fn new(config: Arc<Config>, cache: CacheIndex) -> Self {
+    pub fn new(config: ConfigHandle, cache: CacheIndex) -> Self {
         let client = Client::builder()
             .timeout(Duration::from_secs(30))
             .build()
@@ -66,13 +66,14 @@ impl SoundResolver {
         full_input: &str,
         matched_text: &str,
     ) -> Result<Resolution> {
-        let cpf = &self.config.patterns[m.pattern_index];
+        let config = self.config.snapshot();
+        let cpf = &config.patterns[m.pattern_index];
         let pattern_config = cpf
             .overrides
-            .apply_some(&self.config.overridable)
+            .apply_some(&config.overridable)
             .unwrap_or_else(|e| {
                 warn!(error = %e, "failed to merge pattern overrides, using global defaults");
-                self.config.overridable.clone()
+                config.overridable.clone()
             });
         let volume_db = pattern_config.volume_target_db;
         let crossfade_ms = pattern_config.crossfade_ms;

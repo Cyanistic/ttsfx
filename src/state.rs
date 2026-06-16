@@ -1,5 +1,5 @@
 use crate::cache::CacheIndex;
-use crate::config::Config;
+use crate::config_handle::ConfigHandle;
 use crate::resolver::SoundResolver;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -8,7 +8,7 @@ use strum::EnumDiscriminants;
 
 #[derive(Clone)]
 pub struct AppState {
-    pub config: Arc<Config>,
+    pub config: ConfigHandle,
     pub cache: CacheIndex,
     pub resolver: Arc<SoundResolver>,
     /// Shared upstream HTTP client (TTS + timeouts).
@@ -16,7 +16,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(config: Arc<Config>, cache: CacheIndex, resolver: Arc<SoundResolver>) -> Self {
+    pub fn new(config: ConfigHandle, cache: CacheIndex, resolver: Arc<SoundResolver>) -> Self {
         let http = reqwest::Client::builder()
             .timeout(Duration::from_secs(120))
             .build()
