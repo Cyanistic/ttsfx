@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="ttsfx">
+  <defs>
+    <linearGradient id="bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1a1f2e"/>
+      <stop offset="100%" stop-color="#12151c"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="56" fill="url(#bg)"/>
+  <!-- speech bubble -->
+  <path fill="#0d9488" d="M48 72c0-13 11-24 24-24h112c13 0 24 11 24 24v72c0 13-11 24-24 24H96l-28 28v-28H72c-13 0-24-11-24-24V72z"/>
+  <!-- waveform -->
+  <path fill="none" stroke="#f0fdfa" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"
+    d="M76 108v40M96 92v72M116 100v56M136 88v80"/>
+  <!-- sfx burst -->
+  <g transform="translate(168 108)">
+    <path fill="#f97316" d="M0-36L8-8l28 4-22 18 6 28-20-20-28 6 18-22-4-28z"/>
+    <circle cx="0" cy="0" r="14" fill="#fed7aa"/>
+  </g>
+</svg>

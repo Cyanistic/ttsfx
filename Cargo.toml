@@ -2,6 +2,11 @@
 name = "ttsfx"
 version = "0.1.0"
 edition = "2024"
+authors = ["Cyanism <github@cyan.slmail.me>"]
+description = "Speech API proxy that replaces onomatopoeia in TTS input with cached or generated sound effects"
+readme = "README.md"
+keywords = ["tts", "openai", "speech", "sfx", "elevenlabs", "proxy", "axum"]
+categories = ["web-programming", "multimedia::audio"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

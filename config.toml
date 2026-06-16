@@ -1,32 +1,60 @@
-# Built-in sound effect pattern filters.
-# Edit this file to add/remove/override patterns without recompiling.
+# ttsfx configuration
+#
+# Structure:
+#   [overridable]  — defaults for every pattern (TTS, SFX, cache, matching, prompts).
+#   [[patterns]]   — one row per onomatopoeia rule (regex + priority). Higher priority wins when multiple match.
+#   [patterns.overrides] — optional per-pattern partial overrides (same keys as [overridable]).
+#
+# First-time setup (minimum):
+#   1. Set tts_base_url to your OpenAI-compatible speech API (local Kokoro, OpenAI, etc.).
+#   2. Set sfx_api_key (or ELEVENLABS_API_KEY) if cache misses should generate new SFX.
+#   3. Pick cache matching:
+#        - levenshtein — no extra service; matches on matched text string (see commented block below).
+#        - embeddings  — needs embed_base_url + embed_model (OpenAI-compatible); run `ttsfx reindex` after changes.
+#
+# Cache files + JSON sidecars live under cache_dir (default sound_cache/ in code if unset; set explicitly if you prefer).
+# Env overrides: TTSFX_OVERRIDABLE__TTS_BASE_URL (double underscore between sections).
 
 [overridable]
+# --- Cache matching (pick one) ---
 match_mode = { mode = "embeddings", threshold = 0.92 }
+# Simpler start (no embedding server): match_mode = { mode = "levenshtein", threshold = 1 }
+# threshold: levenshtein = max edit distance (lower stricter); embeddings = min cosine similarity (higher stricter).
+
+# --- Embeddings API (only for match_mode = "embeddings") ---
 embed_base_url = "http://127.0.0.1:11434/v1"
 embed_model = "nomic-embed-text"
 embed_api_key = ""
-tts_base_url = "http://192.168.1.253:8880/v1"
+
+# --- Upstream TTS (speech fragments between SFX hits) ---
+tts_base_url = "http://127.0.0.1:8880/v1"
+
+# --- ElevenLabs sound generation (cache misses) ---
 sfx_base_url = "https://api.elevenlabs.io"
 sfx_api_key = { env = "ELEVENLABS_API_KEY" }
-# ElevenLabs sound-generation output_format (mp3, wav_48000, …). Must be a container ffmpeg can read.
+# ElevenLabs output_format query param; must be a container ffmpeg can decode (mp3, wav_48000, …).
 sfx_output_format = "mp3_44100_128"
-# SFX level after RMS match to speech: 0 = same loudness, negative = quieter (default in code is -16 if unset)
+# sfx_prompt_influence = 0.3   # 0–1; higher = stick closer to sfx_prompt_template text
+# sfx_duration_seconds = 2.0   # omit to let ElevenLabs infer length from the prompt
+
+# --- Mix / cache layout ---
+# cache_dir = "sound_cache"
 volume_target_db = 0
-# crossfade_ms = 12   # default at SFX joins; 0 = hard join
+# SFX loudness vs speech after RMS match: 0 ≈ same level; negative = quieter (code default -16 if omitted).
+# crossfade_ms = 12            # ms at joins involving SFX; 0 = hard cut
+
+# --- Recipe text (ElevenLabs prompt + embedding query) ---
 context = { mode = "sentences", before = 1, after = 1 }
-# Recipe → ElevenLabs + embeddings. Vars: text, context, name, tags
+# context: chars or sentences around the matched word, fed into the template as {{ context }}.
 sfx_prompt_template = "\"{{ text }}\"{% if context %} — {{ context }}{% endif %}. Invent a creative sound for this moment. Keep it short and tight: end when the effect ends, no long reverb, no trailing silence."
-# sfx_duration_seconds = 2.0   # omit to let ElevenLabs choose length from the prompt
-# match_mode threshold: lower levenshtein / higher embedding cosine = stricter cache (more regen)
-# match_mode = { mode = "levenshtein", threshold = 1 }
+# Template vars: {{ text }}, {{ context }}, {{ name }}, {{ tags }} (pattern name / pattern tags).
 
 [[patterns]]
 name = "boom"
 priority = 100
 regex = "\\b(?:BOOM|Boom)\\b"
-# cache_tag = "impact"   # lookup scope per pattern (default: default)
-# tags = ["loud"]        # recipe template only; not in [overridable] or overrides
+# cache_tag = "impact"   # cache lookup scope (default: default); entries only match within the same tag
+# tags = ["loud"]        # cosmetic labels for the recipe template only
 # [patterns.overrides]
 # crossfade_ms = 20
 
