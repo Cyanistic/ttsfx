@@ -75,9 +75,3 @@ pub struct ReindexEmbeddingsArgs {
     #[arg(long)]
     pub dry_run: bool,
 }
-
-impl Cli {
-    pub fn parse_args() -> Self {
-        Self::parse()
-    }
-}

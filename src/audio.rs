@@ -4,6 +4,8 @@ use tracing::debug;
 use std::process::Stdio;
 use tokio::process::Command;
 
+const PCM_SCALE: f32 = i16::MAX as f32;
+
 /// A decoded audio segment with f32 samples.
 #[derive(Debug, Clone)]
 pub struct AudioSegment {
@@ -103,7 +105,7 @@ fn parse_pcm_s16le(pcm_bytes: &[u8], sample_rate: u32) -> Result<AudioSegment> {
     let samples: Vec<f32> = (0..num_samples)
         .map(|i| {
             let raw = i16::from_le_bytes([pcm_bytes[i * 2], pcm_bytes[i * 2 + 1]]);
-            raw as f32 / i16::MAX as f32
+            raw as f32 / PCM_SCALE
         })
         .collect();
     Ok(AudioSegment {
@@ -161,7 +163,7 @@ pub fn concat_segments(mut segments: Vec<AudioSegment>) -> Result<AudioSegment, 
 
 /// Concatenate with a linear crossfade per join. `crossfade_samples[i]` is the overlap between
 /// segment `i` and `i + 1`; length must be `segments.len().saturating_sub(1)`. `0` = hard join.
-pub fn concat_segments_crossfaded_variable(
+pub fn concat_segments_crossfaded(
     segments: Vec<AudioSegment>,
     crossfade_samples: &[usize],
 ) -> Result<AudioSegment, Vec<AudioSegment>> {
@@ -222,7 +224,7 @@ pub async fn encode_mp3(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
 pub async fn encode_wav(samples: &[f32], sample_rate: u32) -> Result<Vec<u8>> {
     let pcm: Vec<i16> = samples
         .iter()
-        .map(|&s| (s.clamp(-1.0, 1.0) * i16::MAX as f32) as i16)
+        .map(|&s| (s.clamp(-1.0, 1.0) * PCM_SCALE) as i16)
         .collect();
     let data_size = pcm.len() * 2;
     let mut out = Vec::with_capacity(44 + data_size);
@@ -255,7 +257,7 @@ async fn encode_ffmpeg(
     let pcm: Vec<u8> = samples
         .iter()
         .flat_map(|&s| {
-            let pcm = (s * i16::MAX as f32) as i16;
+            let pcm = (s * PCM_SCALE) as i16;
             pcm.to_le_bytes()
         })
         .collect();

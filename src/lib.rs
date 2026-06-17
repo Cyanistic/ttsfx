@@ -31,7 +31,6 @@ use tower::ServiceBuilder;
 use tower_http::trace::{DefaultOnFailure, DefaultOnRequest, TraceLayer};
 use tracing::{Level, info};
 
-pub use config::volume_gain;
 pub use error::Result;
 pub use tracing_init::init_tracing;
 

@@ -1,9 +1,9 @@
 use crate::utils::{PartialOrDefault, WarnOnError};
-use crate::{Result, err, utils::Partial};
+use crate::{err, utils::Partial, Result};
 use config::{Config as ConfigBuilder, Environment, File, FileFormat};
 use fancy_regex::Regex;
 use serde::{Deserialize, Serialize};
-use serde_with::{DisplayFromStr, VecSkipError, serde_as, skip_serializing_none};
+use serde_with::{serde_as, skip_serializing_none, DisplayFromStr, VecSkipError};
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
@@ -11,6 +11,10 @@ use std::path::{Path, PathBuf};
 const DEFAULT_CONFIG: &str = include_str!("../config.toml");
 
 /// Secret resolved at config load: inline string or `env = "VAR_NAME"`.
+///
+/// Resolution is intentionally lazy — ElevenLabs generation is optional and the
+/// server should start without `ELEVENLABS_API_KEY`. The env var is only read
+/// when a cache miss triggers SFX generation at request time.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum SecretSource {
@@ -74,7 +78,7 @@ impl PatternFilter {
 
 /// A compiled pattern filter rule for detecting onomatopoeia in text.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ConfigPatternFilter {
+pub struct PatternEntry {
     #[serde(flatten)]
     pub filter: PatternFilter,
     /// Per-pattern dB override. None = use global default from Config.
@@ -210,7 +214,7 @@ pub struct Config {
 
     /// Compiled filters from defaults + user overrides.
     #[serde_as(as = "VecSkipError<_, WarnOnError>")]
-    pub patterns: Vec<ConfigPatternFilter>,
+    pub patterns: Vec<PatternEntry>,
 }
 
 pub fn default_sample_rate() -> u32 {

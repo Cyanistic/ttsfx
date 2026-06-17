@@ -214,7 +214,7 @@ pub async fn handle_speech(
         .map(|ms| ms_to_samples(*ms, sample_rate))
         .collect();
 
-    let merged = audio::concat_segments_crossfaded_variable(segments, &join_crossfade_samples)
+    let merged = audio::concat_segments_crossfaded(segments, &join_crossfade_samples)
         .map_err(|_| err!(Internal, "audio segments sample rate or channel mismatch"))?;
 
     let format = body.response_format;
@@ -424,7 +424,13 @@ async fn generate_and_cache(
     Ok((audio_bytes, filepath))
 }
 
-/// Strip hop-by-hop / body headers unsuitable for upstream TTS sub-requests (`json()` sets body headers).
+/// Strip hop-by-hop and body headers unsuitable for upstream TTS sub-requests.
+///
+/// RFC 7230 §6.1 defines hop-by-hop headers (Connection, TE, Trailer,
+/// Transfer-Encoding, Upgrade, Proxy-Authorization, Proxy-Authenticate)
+/// that must not be forwarded. We also strip Host, Content-Length, and
+/// Content-Type because `reqwest::RequestBuilder::json()` sets its own
+/// Content-Type and the upstream is a different host.
 fn forward_client_headers(headers: &mut HeaderMap) {
     const SKIP: &[HeaderName] = &[
         HOST,

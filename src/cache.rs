@@ -2,10 +2,11 @@ use std::ops::Deref;
 
 use bytemuck::{self, PodCastError};
 use crate::config::{PatternFilter, default_cache_tag};
+use crate::fs_watch::spawn_debounced_notify;
 use crate::error::ResultExt;
 use crate::{Result, bail, err};
 use chrono::{DateTime, Utc};
-use notify::{Event, EventKind, RecursiveMode, Watcher};
+use notify::{EventKind, RecursiveMode};
 use serde::{Deserialize, Serialize};
 use serde_with::base64::Base64;
 use serde_with::{serde_as, skip_serializing_none, TryFromIntoRef};
@@ -13,10 +14,10 @@ use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+
 use tokio::process::Command;
-use tokio::sync::{mpsc, watch};
-use tracing::{debug, info, warn};
+use tokio::sync::watch;
+use tracing::{debug, info};
 
 const AUDIO_EXTENSIONS: &[&str] = &["wav", "mp3", "ogg", "flac"];
 
@@ -139,7 +140,54 @@ impl CacheIndex {
         info!(count = initial.len(), "loaded cache entries");
         let _ = tx.send(initial);
 
-        tokio::spawn(Self::watch_loop(cache_dir, tx));
+        spawn_debounced_notify(cache_dir, RecursiveMode::Recursive, move |events| {
+            let tx = tx.clone();
+            async move {
+                let current: HashMap<PathBuf, CacheEntry> = tx
+                    .borrow()
+                    .iter()
+                    .cloned()
+                    .map(|e| (e.filepath.clone(), e))
+                    .collect();
+                let mut map = current;
+
+                for event in &events {
+                    match &event.kind {
+                        EventKind::Create(_) | EventKind::Modify(_) => {
+                            for path in &event.paths {
+                                if !is_audio_path(path) {
+                                    continue;
+                                }
+                                if path
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .is_some_and(|n| n.contains(".tmp."))
+                                {
+                                    continue;
+                                }
+                                if let Ok(entry) = CacheIndex::load_entry(path).await.warn() {
+                                    map.insert(path.clone(), entry);
+                                }
+                            }
+                        }
+                        EventKind::Remove(_) => {
+                            for path in &event.paths {
+                                map.remove(path);
+                            }
+                        }
+                        _ => {
+                            continue;
+                        }
+                    }
+                }
+
+                let entries: Vec<CacheEntry> = map.into_values().collect();
+                info!(count = entries.len(), "cache index updated");
+                if tx.send(entries).is_err() {
+                    debug!("cache index receiver dropped");
+                }
+            }
+        });
 
         Self { rx }
     }
@@ -215,81 +263,7 @@ impl CacheIndex {
         entries
     }
 
-    /// Async watch loop: receives filesystem events, debounces, applies targeted updates.
-    async fn watch_loop(cache_dir: PathBuf, tx: watch::Sender<Vec<CacheEntry>>) {
-        let (event_tx, mut event_rx) = mpsc::channel::<Event>(64);
 
-        let mut watcher = match notify::recommended_watcher(move |res: notify::Result<Event>| {
-            if let Ok(event) = res.warn() {
-                event_tx.blocking_send(event).warn().ok();
-            }
-        }) {
-            Ok(w) => w,
-            Err(e) => {
-                warn!(error = %e, "failed to create cache watcher");
-                return;
-            }
-        };
-
-        if let Err(e) = watcher.watch(&cache_dir, RecursiveMode::Recursive) {
-            warn!(error = %e, "failed to watch cache directory");
-            return;
-        }
-
-        while let Some(first) = event_rx.recv().await {
-            tokio::time::sleep(Duration::from_millis(250)).await;
-            let mut events = vec![first];
-            while let Ok(event) = event_rx.try_recv() {
-                events.push(event);
-            }
-
-            let current: HashMap<PathBuf, CacheEntry> = tx
-                .borrow()
-                .iter()
-                .cloned()
-                .map(|e| (e.filepath.clone(), e))
-                .collect();
-            let mut map = current;
-
-            for event in &events {
-                match &event.kind {
-                    EventKind::Create(_) | EventKind::Modify(_) => {
-                        for path in &event.paths {
-                            if !is_audio_path(path) {
-                                continue;
-                            }
-                            if path
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                                .is_some_and(|n| n.contains(".tmp."))
-                            {
-                                continue;
-                            }
-                            if let Ok(entry) = Self::load_entry(path).await.warn() {
-                                map.insert(path.clone(), entry);
-                            }
-                        }
-                    }
-                    EventKind::Remove(_) => {
-                        for path in &event.paths {
-                            map.remove(path);
-                        }
-                    }
-                    _ => {
-                        continue;
-                    }
-                }
-            }
-
-            let entries: Vec<CacheEntry> = map.into_values().collect();
-            info!(count = entries.len(), "cache index updated");
-            if tx.send(entries).is_err() {
-                debug!("cache index receiver dropped");
-            }
-        }
-
-        drop(watcher);
-    }
 }
 
 /// Stamp metadata into an audio file via ffmpeg. Writes to a temp file, then renames.
